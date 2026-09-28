@@ -32,6 +32,8 @@ internal sealed class MouseService : IDisposable
     private MouseProfile? onboardProfile, onboardBaseline;
     private bool onboardDirty, onboardBackedUp;
     private Timer? onboardTimer;
+    /// <summary>The profile the pages last rendered, to notice when <see cref="ActiveProfile"/> becomes another one.</summary>
+    private MouseProfile? shownProfile;
 
     public Settings Settings { get; }
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
@@ -200,6 +202,7 @@ internal sealed class MouseService : IDisposable
         BatteryCharging = false;
         ReleaseAll();
         StateChanged?.Invoke();
+        NotifyIfProfileChanged();
     }
 
     private void ReleaseAll()
@@ -213,6 +216,23 @@ internal sealed class MouseService : IDisposable
     }
 
     private void HandleEvent(DeviceEvent item)
+    {
+        HandleEventCore(item);
+        NotifyIfProfileChanged();
+    }
+
+    /// <summary>
+    /// Refreshes the pages when the profile they show is a different one: the on-board slot is read, the
+    /// connection completes (only then does <see cref="IsOnboard"/> hold), the mode switches, or it disconnects.
+    /// </summary>
+    private void NotifyIfProfileChanged()
+    {
+        if (ReferenceEquals(ActiveProfile, shownProfile)) return;
+        shownProfile = ActiveProfile;
+        SettingsChanged?.Invoke();
+    }
+
+    private void HandleEventCore(DeviceEvent item)
     {
         switch (item)
         {
@@ -247,10 +267,9 @@ internal sealed class MouseService : IDisposable
                 break;
             case OnboardMemoryEvent onboard:
                 Onboard = onboard.Memory;
-                bool replaced = RebuildOnboardProfile();
+                RebuildOnboardProfile();
                 if (onboardDirty && !OnboardBusy) FlushOnboard(); // Edits made while the last write was in flight.
                 StateChanged?.Invoke();
-                if (replaced && IsOnboard) SettingsChanged?.Invoke();
                 break;
             case OnboardWriteEvent written:
                 OnboardBusy = false;
@@ -409,9 +428,9 @@ internal sealed class MouseService : IDisposable
     {
         MouseControl? control = Settings.ControlFor(bit);
         if (control is null || OnboardProfiles.IndexFor(control.Id) is null)
-            return $"{control?.Label ?? "This control"} can't be changed in on-board memory";
+            return $"{control?.Label ?? "This control"} isn't available for on-board profiles";
         if (!string.IsNullOrEmpty(id) && OnboardProfiles.Encode(id) is null)
-            return $"The mouse can't store {Settings.DescribeAssignment(id)}. Macros, launching apps, double click, lock screen and wheel notches only work when BetterGhub handles the mouse.";
+            return $"{Settings.DescribeAssignment(id)} isn't available for on-board profiles";
         return null;
     }
 

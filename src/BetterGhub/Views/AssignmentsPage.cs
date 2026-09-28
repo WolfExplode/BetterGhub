@@ -375,7 +375,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
                 break;
 
             case "Keys":
-                options.Children.Add(Ui.Text("The key stays down for as long as you hold the button.", "Body", size: 12, wrap: true).With(new Thickness(2, 0, 8, 8)));
+                options.Children.Add(ShortcutRecorder(bit));
+                options.Children.Add(Ui.Text("Record a key with Ctrl, Shift, Alt or Win (e.g. Alt+Tab), or pick a single key below. It stays down for as long as you hold the button.", "Body", size: 12, wrap: true).With(new Thickness(2, 4, 8, 8)));
                 before = options.Children.Count;
                 foreach ((string keyName, string name) in Assignments.Keys)
                 {
@@ -386,6 +387,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
                 break;
 
             case "Macros":
+                if (service.IsOnboard)
+                    options.Children.Add(Ui.Text("Macros aren't available for on-board profiles.", "Body", size: 12, wrap: true).With(new Thickness(2, 0, 8, 8)));
                 StackPanel list = new();
                 options.Children.Add(list);
                 foreach (MacroDefinition macro in service.Settings.Macros.Where(m => Matches(m.Name)))
@@ -396,6 +399,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
                     list.Children.Add(NoMatches());
                 Button create = Ui.Button("New macro", () => CreateMacroFor(bit), "GhostBtn", "");
                 create.HorizontalAlignment = HorizontalAlignment.Left;
+                create.IsEnabled = !service.IsOnboard;
                 options.Children.Add(create.With(new Thickness(0, 6, 0, 0)));
                 return;
 
@@ -412,6 +416,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
                         options.Children.Add(ListRow(id, current == id, Path.GetFileNameWithoutExtension(Assignments.LaunchPath(id)!), null, Used(id), bit, tooltip: Assignments.LaunchPath(id)));
                     Button add = Ui.Button("ADD APPLICATION", () => PickApplication(bit), "GhostBtn", "");
                     add.HorizontalAlignment = HorizontalAlignment.Left;
+                    add.IsEnabled = !service.IsOnboard;
                     options.Children.Add(add.With(new Thickness(0, 0, 0, 4)));
                 }
                 before = options.Children.Count;
@@ -468,9 +473,24 @@ internal sealed class AssignmentsPage : UserControl, IPage
             Style = Ui.Style("Row"), Content = content, IsChecked = isCurrent, GroupName = "Assignment",
             Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(0, 0, 8, 1), ToolTip = tooltip
         };
+        if (Unavailable(row, id)) return row;
         MakeDraggable(row, id, isCurrent);
         row.ContextMenu = AssignMenu(id, isCurrent, bit);
         return row;
+    }
+
+    /// <summary>
+    /// On an on-board profile, greys out an option the slot can't store (macros, launching apps, double click…)
+    /// so it can't be clicked, dragged or right-clicked. Returns whether it did.
+    /// </summary>
+    private bool Unavailable(RadioButton row, string id)
+    {
+        if (!service.IsOnboard || OnboardProfiles.Encode(id) is not null) return false;
+        row.IsEnabled = false;
+        row.Opacity = 0.4;
+        row.ToolTip = "Not available for on-board profiles";
+        ToolTipService.SetShowOnDisabled(row, true);
+        return true;
     }
 
     /// <summary>Right-click menu on an option row: the other deliberate way to assign it, to the selected control.</summary>
@@ -546,6 +566,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
             content.Children.Add(edit);
         }
         RadioButton row = new() { Style = Ui.Style("Row"), Content = content, IsChecked = isCurrent, GroupName = "Assignment", Margin = new Thickness(0, 0, 8, 2) };
+        if (Unavailable(row, id)) return row;
         MakeDraggable(row, id, isCurrent);
         row.ContextMenu = AssignMenu(id, isCurrent, bit, macro);
         return row;
@@ -571,11 +592,15 @@ internal sealed class AssignmentsPage : UserControl, IPage
         object idle = button.Content;
         KeyboardHook? hook = null;
         HashSet<ushort> swallowed = [];
+        // Modifiers held during recording. They're swallowed like every other key, so Windows never marks them
+        // down and GetAsyncKeyState can't see them; track them from the hook instead.
+        HashSet<ushort> modifiers = [];
 
         void Stop()
         {
             hook?.Dispose();
             hook = null;
+            modifiers.Clear();
             button.Content = idle;
         }
 
@@ -591,19 +616,28 @@ internal sealed class AssignmentsPage : UserControl, IPage
         bool OnKey(ushort vk, bool down)
         {
             // Key releases for keys swallowed while recording are swallowed too, so nothing sees a stray release.
-            if (!down) return swallowed.Remove(vk);
+            if (!down)
+            {
+                modifiers.Remove(vk);
+                return swallowed.Remove(vk);
+            }
             if (hook is null || Window.GetWindow(button) is not { IsActive: true })
             {
                 Dispatcher.BeginInvoke(Stop);
                 return false;
             }
             swallowed.Add(vk);
-            if (VirtualKeys.IsModifier(vk)) return true;
+            if (VirtualKeys.IsModifier(vk))
+            {
+                modifiers.Add(vk);
+                return true;
+            }
+            bool Held(params ushort[] keys) => keys.Any(k => modifiers.Contains(k) || IsDown(k));
             List<string> parts = [];
-            if (IsDown(0x11)) parts.Add("Ctrl");
-            if (IsDown(0x10)) parts.Add("Shift");
-            if (IsDown(0x12)) parts.Add("Alt");
-            if (IsDown(0x5B) || IsDown(0x5C)) parts.Add("Win");
+            if (Held(0x11, 0xA2, 0xA3)) parts.Add("Ctrl");
+            if (Held(0x10, 0xA0, 0xA1)) parts.Add("Shift");
+            if (Held(0x12, 0xA4, 0xA5)) parts.Add("Alt");
+            if (Held(0x5B, 0x5C)) parts.Add("Win");
             parts.Add(VirtualKeys.NameOf(vk));
             bool cancel = vk == 0x1B && parts.Count == 1;
             Dispatcher.BeginInvoke(() =>
