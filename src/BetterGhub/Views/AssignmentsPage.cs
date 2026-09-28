@@ -474,7 +474,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     }
 
     /// <summary>Right-click menu on an option row: the other deliberate way to assign it, to the selected control.</summary>
-    private ContextMenu AssignMenu(string id, bool isCurrent, int bit)
+    private ContextMenu AssignMenu(string id, bool isCurrent, int bit, MacroDefinition? macro = null)
     {
         MenuItem assign = new()
         {
@@ -488,7 +488,35 @@ internal sealed class AssignmentsPage : UserControl, IPage
             shell.ShowToast($"{selected.Label} → {service.Settings.DescribeAssignment(id)}");
             Refresh();
         };
-        return new ContextMenu { Items = { assign } };
+        ContextMenu menu = new() { Items = { assign } };
+        if (macro is not null) menu.Items.Add(DeleteMacroItem(macro, menu));
+        return menu;
+    }
+
+    /// <summary>"Delete macro": the first click arms it ("Click again to delete"), the second deletes. Closing the menu disarms it.</summary>
+    private MenuItem DeleteMacroItem(MacroDefinition macro, ContextMenu menu)
+    {
+        MenuItem delete = new() { Header = "Delete macro", Icon = Ui.Glyph("", 12), StaysOpenOnClick = true };
+        bool armed = false;
+        delete.Click += (_, _) =>
+        {
+            if (!armed)
+            {
+                armed = true;
+                delete.Header = "Click again to delete";
+                return;
+            }
+            menu.IsOpen = false;
+            service.DeleteMacro(macro);
+            shell.ShowToast($"Deleted {macro.Name}");
+            Refresh();
+        };
+        menu.Closed += (_, _) =>
+        {
+            armed = false;
+            delete.Header = "Delete macro";
+        };
+        return delete;
     }
 
     private RadioButton OptionRow(string id, bool isCurrent, string name, string subtitle, int bit, MacroDefinition? macro = null)
@@ -519,7 +547,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         }
         RadioButton row = new() { Style = Ui.Style("Row"), Content = content, IsChecked = isCurrent, GroupName = "Assignment", Margin = new Thickness(0, 0, 8, 2) };
         MakeDraggable(row, id, isCurrent);
-        row.ContextMenu = AssignMenu(id, isCurrent, bit);
+        row.ContextMenu = AssignMenu(id, isCurrent, bit, macro);
         return row;
     }
 

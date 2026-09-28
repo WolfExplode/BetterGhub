@@ -378,6 +378,18 @@ internal sealed class MouseService : IDisposable
             : profile.Assignments.GetValueOrDefault(bit) ?? Settings.ControlFor(bit)?.SoftwareDefault ?? "";
     }
 
+    /// <summary>Deletes a macro and clears every button, in every profile and layer, that was assigned to it.</summary>
+    public void DeleteMacro(MacroDefinition macro)
+    {
+        foreach (MouseProfile profile in Settings.Profiles)
+        {
+            foreach (int bit in profile.Assignments.Where(x => x.Value == macro.Id).Select(x => x.Key).ToArray()) profile.Assignments.Remove(bit);
+            foreach (int bit in profile.ShiftAssignments.Where(x => x.Value == macro.Id).Select(x => x.Key).ToArray()) profile.ShiftAssignments.Remove(bit);
+        }
+        Settings.Macros.Remove(macro);
+        Save();
+    }
+
     /// <summary>Assigns an action; false (with a <see cref="Notice"/>) when the on-board slot can't store it.</summary>
     public bool Assign(bool shiftLayer, int bit, string? id)
     {

@@ -384,14 +384,8 @@ internal sealed class MacrosPage : UserControl, IPage
     {
         Button delete = Ui.DeleteButton("", () =>
         {
-            foreach (MouseProfile profile in service.Settings.Profiles)
-            {
-                foreach (int bit in profile.Assignments.Where(x => x.Value == current.Id).Select(x => x.Key).ToArray()) profile.Assignments.Remove(bit);
-                foreach (int bit in profile.ShiftAssignments.Where(x => x.Value == current.Id).Select(x => x.Key).ToArray()) profile.ShiftAssignments.Remove(bit);
-            }
             int index = service.Settings.Macros.IndexOf(current);
-            service.Settings.Macros.Remove(current);
-            service.Save();
+            service.DeleteMacro(current);
             macro = service.Settings.Macros.Count == 0 ? null : service.Settings.Macros[Math.Min(index, service.Settings.Macros.Count - 1)];
             selectedStep = -1;
             shell.ShowToast($"Deleted {current.Name}");
