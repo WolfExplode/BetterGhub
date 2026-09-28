@@ -1,38 +1,24 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using BetterGhub.Core;
 using BetterGhub.Services;
 
 namespace BetterGhub.Views;
 
 /// <summary>
-/// The mouse's on-board profile slots: view them, edit one (name, enabled, report rate, DPI, or a copy of
-/// a BetterGhub profile's bindings), restore a backup, or hand the mouse over to a slot.
+/// The mouse's on-board profile slots: view them, rename (double-click) or enable, disable and run one
+/// (right-click), fill one from a BetterGhub profile, or restore a backup. Buttons and DPI of the running slot are edited on
+/// the Assignments and Sensitivity pages.
 /// </summary>
 internal sealed class OnboardCard : ContentControl
 {
-    private static readonly int[] Rates = [125, 250, 500, 1000];
-
     private readonly MouseService service;
     private int selectedSlot = 1;
-    /// <summary>Slot being edited and its unsaved values; null when just viewing.</summary>
-    private Draft? draft;
     private object? rendered;
-
-    private sealed class Draft(int slot, OnboardEdit edit)
-    {
-        public int Slot = slot;
-        public string Name = edit.Name;
-        public bool Enabled = edit.Enabled;
-        public int ReportIntervalMs = edit.ReportIntervalMs;
-        /// <summary>Five boxes; blank ones are dropped when saving.</summary>
-        public string[] Dpis = [.. Enumerable.Range(0, 5).Select(i => i < edit.Dpis.Count ? edit.Dpis[i].ToString() : "")];
-        public int DefaultIndex = edit.DefaultDpiIndex, ShiftIndex = edit.ShiftDpiIndex;
-        public Dictionary<int, uint> Buttons = new(edit.Buttons), ShiftButtons = new(edit.ShiftButtons);
-        public string? CopiedFrom;
-        public List<string> Notes = [];
-    }
+    /// <summary>A slot name is being typed; background refreshes wait so they don't throw it away.</summary>
+    private bool renaming;
 
     public OnboardCard(MouseService service)
     {
@@ -41,8 +27,7 @@ internal sealed class OnboardCard : ContentControl
         service.StateChanged += () => { if (IsLoaded) Render(); };
         service.OnboardWritten += (success, message) =>
         {
-            if (success) draft = null;
-            (Window.GetWindow(this) as MainWindow)?.ShowToast(success ? message : "Not saved: " + message);
+            Toast(success ? message : "Not saved: " + message);
             Render(force: true);
         };
         Render();
@@ -50,13 +35,14 @@ internal sealed class OnboardCard : ContentControl
 
     /// <summary>
     /// Rebuilds the card. StateChanged also fires for DPI and battery updates, so without <paramref name="force"/>
-    /// this only redraws when something the card shows changed, and never throws away half-typed edits.
+    /// this only redraws when something the card shows changed, and never while a name is being typed.
     /// </summary>
     public void Render(bool force = false)
     {
         object signature = (service.State, service.Onboard, service.OnboardBusy, service.OnboardSector);
-        if (!force && Equals(signature, rendered)) return;
+        if (!force && (renaming || Equals(signature, rendered))) return;
         rendered = signature;
+        renaming = false;
 
         StackPanel body = new();
         DockPanel head = new();
@@ -72,7 +58,8 @@ internal sealed class OnboardCard : ContentControl
         head.Children.Add(Ui.Text("On-board memory", "H2"));
         body.Children.Add(head);
         body.Children.Add(Ui.Text("Profiles saved on the mouse itself, used when BetterGhub isn't handling the buttons: on another computer, when BetterGhub isn't running, "
-            + "or when you run a slot here or from the profile menu. While a slot runs, the Assignments and Sensitivity pages edit it and save to the mouse.", "Body", size: 12, wrap: true).With(new Thickness(0, 6, 0, 18)));
+            + "or when you run a slot here or from the profile menu. While a slot runs, the Assignments and Sensitivity pages edit it and save to the mouse. "
+            + "Double-click a slot to rename it, or right-click it for more.", "Body", size: 12, wrap: true).With(new Thickness(0, 6, 0, 18)));
 
         IReadOnlyList<OnboardSlot>? slots = service.OnboardSlots;
         if (slots is null || slots.Count == 0)
@@ -83,7 +70,6 @@ internal sealed class OnboardCard : ContentControl
         }
         if (slots.All(s => s.Number != selectedSlot)) selectedSlot = slots[0].Number;
         OnboardSlot slot = slots.First(s => s.Number == selectedSlot);
-        if (draft is not null && draft.Slot != slot.Number) draft = null;
 
         Grid layout = new();
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(240) });
@@ -91,13 +77,14 @@ internal sealed class OnboardCard : ContentControl
         StackPanel list = new() { Margin = new Thickness(0, 0, 28, 0) };
         foreach (OnboardSlot item in slots) list.Children.Add(SlotRow(item));
         layout.Children.Add(list);
-        FrameworkElement detail = slot.Profile is null ? Ui.Text("This slot could not be read.", "Body")
-            : draft is not null ? Editor(slot, draft) : Viewer(slot);
+        FrameworkElement detail = slot.Profile is null ? Ui.Text("This slot could not be read.", "Body") : Viewer(slot);
         Grid.SetColumn(detail, 1);
         layout.Children.Add(detail);
         body.Children.Add(layout);
         Content = Ui.Card(body, new Thickness(24, 20, 24, 20));
     }
+
+    private bool CanWrite => service.State == ConnectionState.Connected && !service.OnboardBusy;
 
     private RadioButton SlotRow(OnboardSlot slot)
     {
@@ -115,52 +102,106 @@ internal sealed class OnboardCard : ContentControl
         name.TextTrimming = TextTrimming.CharacterEllipsis;
         name.VerticalAlignment = VerticalAlignment.Center;
         content.Children.Add(name);
-        RadioButton row = new() { Style = Ui.Style("Row"), Content = content, GroupName = "OnboardSlots", IsChecked = slot.Number == selectedSlot };
+        RadioButton row = new()
+        {
+            Style = Ui.Style("Row"), Content = content, GroupName = "OnboardSlots", IsChecked = slot.Number == selectedSlot,
+            ToolTip = slot.Profile is not null ? "Double-click to rename · right-click for more" : null
+        };
+        if (slot.Profile is not null && service.State == ConnectionState.Connected) row.ContextMenu = SlotMenu(slot, running, () => StartRename(slot, content, name));
         row.Click += (_, _) =>
         {
-            if (slot.Number == selectedSlot) return;
+            if (slot.Number == selectedSlot || renaming) return;
             selectedSlot = slot.Number;
-            draft = null;
             Render(force: true);
+        };
+        row.MouseDoubleClick += (_, e) =>
+        {
+            e.Handled = true;
+            if (slot.Profile is not null && CanWrite && !renaming) StartRename(slot, content, name);
         };
         return row;
     }
 
-    /// <summary>For --snapshot: opens the editor on the selected slot.</summary>
-    internal void StartEditing(MouseProfile? copyFrom = null)
+    private ContextMenu SlotMenu(OnboardSlot slot, bool running, Action rename)
     {
-        if (service.OnboardSlots?.FirstOrDefault(s => s.Number == selectedSlot) is not { Profile: not null } slot) return;
-        List<string> notes = [];
-        draft = copyFrom is null ? new Draft(slot.Number, MouseService.EditFor(slot))
-            : new Draft(slot.Number, service.EditFromProfile(copyFrom, slot.Enabled, notes)) { CopiedFrom = copyFrom.Name, Notes = notes };
-        Render(force: true);
+        MenuItem Item(string header, string glyph, Action click, bool enabled = true)
+        {
+            MenuItem item = new()
+            {
+                Header = header, IsEnabled = enabled,
+                Icon = new TextBlock { Text = glyph, FontFamily = Ui.Font("Icons"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center }
+            };
+            item.Click += (_, _) => click();
+            return item;
+        }
+        return new ContextMenu
+        {
+            Items =
+            {
+                Item("Rename", "\uE8AC", rename, CanWrite),
+                running ? Item("Use BetterGhub profiles", "\uE8AB", service.UseHostMode, !service.OnboardBusy)
+                    : Item("Run this slot", "\uE8AB", () => SwitchTo(slot), slot.Enabled && !service.OnboardBusy),
+                slot.Enabled
+                    ? Item("Disable slot", "\uE711", () => Apply(slot, edit => edit with { Enabled = false }), CanWrite && !running)
+                    : Item("Enable slot", "\uE73E", () => Apply(slot, edit => edit with { Enabled = true }), CanWrite)
+            }
+        };
     }
 
-    // ── Viewing ───────────────────────────────────────────────────────────────
+    /// <summary>Swaps the slot's name for a text box: Enter or leaving it saves to the mouse, Esc cancels.</summary>
+    private void StartRename(OnboardSlot slot, DockPanel content, TextBlock name)
+    {
+        renaming = true;
+        TextBox box = new()
+        {
+            Text = slot.Profile!.Name, MaxLength = OnboardProfiles.MaxNameLength, Padding = new Thickness(6, 2, 6, 2),
+            FontSize = 13.5, FontWeight = FontWeights.SemiBold, Margin = new Thickness(-7, -3, 8, -3), VerticalAlignment = VerticalAlignment.Center
+        };
+        int index = content.Children.IndexOf(name);
+        content.Children.RemoveAt(index);
+        content.Children.Insert(index, box);
+        bool done = false;
+        void Finish(bool save)
+        {
+            if (done) return;
+            done = true;
+            string text = box.Text.Trim();
+            if (save && text != slot.Profile.Name) Apply(slot, edit => edit with { Name = text });
+            else Render(force: true);
+        }
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter) { e.Handled = true; Finish(save: true); }
+            else if (e.Key == Key.Escape) { e.Handled = true; Finish(save: false); }
+        };
+        box.LostKeyboardFocus += (_, _) => Finish(save: true);
+        box.Loaded += (_, _) => { box.Focus(); box.SelectAll(); };
+    }
+
+    // ── Slot detail ───────────────────────────────────────────────────────────
 
     private FrameworkElement Viewer(OnboardSlot slot)
     {
         OnboardProfile profile = slot.Profile!;
+        bool running = service.IsOnboard && service.OnboardSector == slot.Sector;
         StackPanel panel = new();
         DockPanel head = new();
         if (service.State == ConnectionState.Connected)
         {
-            bool running = service.IsOnboard && service.OnboardSector == slot.Sector;
             Button use = running
                 ? Ui.Button("Use BetterGhub profiles", service.UseHostMode, "Btn", "", "Hand the buttons back to BetterGhub")
                 : Ui.Button("Run this slot", () => SwitchTo(slot), "Btn", "",
                     slot.Enabled ? "Run the mouse from this slot. The Assignments and Sensitivity pages then edit it, saving to the mouse." : "Enable this slot first");
             use.IsEnabled = (running || slot.Enabled) && !service.OnboardBusy;
-            Button edit = Ui.Button("Edit", () => { draft = new Draft(slot.Number, MouseService.EditFor(slot)); Render(force: true); }, "Btn", "");
-            edit.IsEnabled = !service.OnboardBusy;
-            StackPanel actions = Ui.Row(8, use, edit);
+            StackPanel actions = Ui.Row(8, CopyFromButton(slot), use);
             DockPanel.SetDock(actions, Dock.Right);
             head.Children.Add(actions);
         }
-        bool active = service.IsOnboard && service.OnboardSector == slot.Sector;
-        TextBlock state = Ui.Text(active ? "Running now" : slot.Enabled ? "Enabled" : "Disabled, so the mouse skips it", "Body", size: 12, color: active ? "Success" : null);
+        TextBlock title = Ui.Text(slot.DisplayName, size: 17, bold: true, color: "Text");
+        title.VerticalAlignment = VerticalAlignment.Center;
+        TextBlock state = Ui.Text(running ? "Running now" : slot.Enabled ? "Enabled" : "Disabled, so the mouse skips it", "Body", size: 12, color: running ? "Success" : null);
         state.VerticalAlignment = VerticalAlignment.Center;
-        head.Children.Add(Ui.Row(12, Ui.Text(slot.DisplayName, size: 17, bold: true, color: "Text"), state));
+        head.Children.Add(Ui.Row(12, title, state));
         panel.Children.Add(head);
         if (!profile.ChecksumOk)
             panel.Children.Add(Notice("The checksum doesn't match, so the mouse uses its factory profile instead of this slot.", "Warning"));
@@ -172,104 +213,16 @@ internal sealed class OnboardCard : ContentControl
         facts.Children.Add(new StackPanel { Margin = new Thickness(0, 0, 24, 6), Children = { Ui.Text("DPI SPEEDS", "Overline"), dpis } });
         facts.Children.Add(Legend());
         panel.Children.Add(facts);
-        panel.Children.Add(BindingTable(profile, null));
+        if (!running)
+            panel.Children.Add(Ui.Text("Run this slot to change its buttons, DPI speeds and report rate on the Assignments and Sensitivity pages.",
+                "Body", size: 11.5, color: "Faint", wrap: true).With(new Thickness(0, 4, 0, 0)));
+        panel.Children.Add(BindingTable(profile));
         return panel;
     }
 
-    // ── Editing ───────────────────────────────────────────────────────────────
-
-    private FrameworkElement Editor(OnboardSlot slot, Draft edit)
+    private Button CopyFromButton(OnboardSlot slot)
     {
-        OnboardProfile profile = slot.Profile!;
-        StackPanel panel = new();
-        DockPanel head = new();
-        Button save = Ui.Button(service.OnboardBusy ? "Saving…" : "Save to mouse", () => Save(slot, edit), "PrimaryBtn", "");
-        save.IsEnabled = !service.OnboardBusy && service.State == ConnectionState.Connected;
-        Button cancel = Ui.Button("Cancel", () => { draft = null; Render(force: true); }, "Btn");
-        cancel.IsEnabled = !service.OnboardBusy;
-        StackPanel actions = Ui.Row(8, CopyFromButton(edit), cancel, save);
-        DockPanel.SetDock(actions, Dock.Right);
-        head.Children.Add(actions);
-        head.Children.Add(Ui.Text($"Editing slot {slot.Number}", size: 17, bold: true, color: "Text"));
-        panel.Children.Add(head);
-        if (edit.CopiedFrom is { } source)
-            panel.Children.Add(Notice($"Copied from BetterGhub profile \"{source}\"." + (edit.Notes.Count > 0 ? "\n• " + string.Join("\n• ", edit.Notes) : ""),
-                edit.Notes.Count > 0 ? "Warning" : "Accent"));
-
-        Grid form = new() { Margin = new Thickness(0, 16, 0, 0) };
-        form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
-        form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        void Row(string label, UIElement control)
-        {
-            int row = form.RowDefinitions.Count;
-            form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            TextBlock text = Ui.Text(label, size: 12.5, color: "Muted");
-            text.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetRow(text, row);
-            form.Children.Add(text);
-            if (control is FrameworkElement element) element.Margin = new Thickness(0, 0, 0, 12);
-            Grid.SetRow(control, row);
-            Grid.SetColumn(control, 1);
-            form.Children.Add(control);
-        }
-
-        TextBox name = new() { Text = edit.Name, MaxLength = OnboardProfiles.MaxNameLength, Width = 280, Padding = new Thickness(12, 8, 12, 8), HorizontalAlignment = HorizontalAlignment.Left };
-        name.TextChanged += (_, _) => edit.Name = name.Text;
-        Row("Name", name);
-
-        CheckBox enabled = new() { Style = Ui.Style("Switch"), IsChecked = edit.Enabled, Content = Ui.Text("The mouse can switch to this slot", color: "Text") };
-        enabled.Click += (_, _) => edit.Enabled = enabled.IsChecked == true;
-        Row("Enabled", enabled);
-
-        StackPanel rates = new() { Orientation = Orientation.Horizontal };
-        foreach (int hz in Rates)
-        {
-            RadioButton rate = new() { Content = $"{hz} Hz", Style = Ui.Style("Segment"), GroupName = "OnboardRate", IsChecked = 1000 / edit.ReportIntervalMs == hz, Padding = new Thickness(12, 7, 12, 7) };
-            rate.Checked += (_, _) => edit.ReportIntervalMs = 1000 / hz;
-            rates.Children.Add(rate);
-        }
-        Row("Report rate", new Border { Style = Ui.Style("SegmentHost"), Child = rates, HorizontalAlignment = HorizontalAlignment.Left });
-
-        StackPanel dpiBoxes = new() { Orientation = Orientation.Horizontal };
-        for (int i = 0; i < 5; i++)
-        {
-            int index = i;
-            TextBox box = new() { Text = edit.Dpis[i], Width = 72, Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 0, 8, 0), MaxLength = 5, HorizontalContentAlignment = HorizontalAlignment.Center };
-            box.TextChanged += (_, _) => edit.Dpis[index] = box.Text.Trim();
-            box.LostFocus += (_, _) => Render(force: true); // Refresh the default and shift pickers' labels.
-            dpiBoxes.Children.Add(box);
-        }
-        Row("DPI speeds", new StackPanel { Children = { dpiBoxes, Ui.Text("Leave a box empty to use fewer speeds.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 6, 0, 0)) } });
-        Row("Default speed", DpiPicker(edit, shift: false));
-        Row("DPI Shift speed", DpiPicker(edit, shift: true));
-        panel.Children.Add(form);
-        panel.Children.Add(Ui.Text("To change button actions, set them up in a BetterGhub profile and use Copy from profile. "
-            + "Macros, launching apps and double clicks only work in BetterGhub, so the mouse can't store them.", "Body", size: 11.5, color: "Faint", wrap: true).With(new Thickness(0, 2, 0, 0)));
-        panel.Children.Add(BindingTable(profile, edit));
-        return panel;
-    }
-
-    private static Border DpiPicker(Draft edit, bool shift)
-    {
-        StackPanel options = new() { Orientation = Orientation.Horizontal };
-        for (int i = 0; i < 5; i++)
-        {
-            if (!int.TryParse(edit.Dpis[i], out int dpi)) continue;
-            int index = i;
-            RadioButton option = new()
-            {
-                Content = dpi.ToString(), Style = Ui.Style("Segment"), GroupName = shift ? "OnboardShift" : "OnboardDefault",
-                IsChecked = (shift ? edit.ShiftIndex : edit.DefaultIndex) == i, Padding = new Thickness(12, 7, 12, 7)
-            };
-            option.Checked += (_, _) => { if (shift) edit.ShiftIndex = index; else edit.DefaultIndex = index; };
-            options.Children.Add(option);
-        }
-        return new Border { Style = Ui.Style("SegmentHost"), Child = options, HorizontalAlignment = HorizontalAlignment.Left };
-    }
-
-    private Button CopyFromButton(Draft edit)
-    {
-        Button button = Ui.Button("Copy from profile…", () => { }, "Btn", "", "Fill this slot from a BetterGhub profile: name, DPI, report rate and button actions");
+        Button button = Ui.Button("Copy from profile…", () => { }, "Btn", "", "Fill this slot from a BetterGhub profile: name, DPI, report rate and every button action the mouse can store");
         Popup popup = new() { PlacementTarget = button, Placement = PlacementMode.Bottom, VerticalOffset = 6, StaysOpen = false, AllowsTransparency = true };
         StackPanel items = new();
         foreach (MouseProfile profile in service.Settings.Profiles)
@@ -278,45 +231,34 @@ internal sealed class OnboardCard : ContentControl
             {
                 popup.IsOpen = false;
                 List<string> notes = [];
-                OnboardEdit copied = service.EditFromProfile(profile, edit.Enabled, notes);
-                draft = new Draft(edit.Slot, copied) { CopiedFrom = profile.Name, Notes = notes };
-                Render(force: true);
+                OnboardEdit copied = service.EditFromProfile(profile, slot.Enabled, notes);
+                if (Apply(slot, _ => copied) && notes.Count > 0)
+                    Toast($"Copied {profile.Name}, except: " + string.Join("; ", notes));
             }, "GhostBtn");
             item.HorizontalContentAlignment = HorizontalAlignment.Left;
             items.Children.Add(item);
         }
         popup.Child = new Border { Background = Ui.Brush("Surface"), BorderBrush = Ui.Brush("LineStrong"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10), Padding = new Thickness(6), MinWidth = 200, Child = items };
         button.Click += (_, _) => popup.IsOpen = true;
-        button.IsEnabled = !service.OnboardBusy;
+        button.IsEnabled = CanWrite;
         return button;
     }
 
-    private void Save(OnboardSlot slot, Draft edit)
+    /// <summary>Writes a change to a slot straight away (a backup of every slot is saved first).</summary>
+    private bool Apply(OnboardSlot slot, Func<OnboardEdit, OnboardEdit> change)
     {
-        Window owner = Window.GetWindow(this);
-        List<int> dpis = [];
-        int defaultIndex = -1, shiftIndex = -1;
-        for (int i = 0; i < 5; i++)
+        try
         {
-            if (edit.Dpis[i].Length == 0) continue;
-            if (!int.TryParse(edit.Dpis[i], out int dpi) || dpi is < 100 or > 25600)
-            {
-                MessageBox.Show(owner, $"\"{edit.Dpis[i]}\" isn't a DPI speed. Use 100–25600.", "Check the DPI speeds", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            if (i == edit.DefaultIndex) defaultIndex = dpis.Count;
-            if (i == edit.ShiftIndex) shiftIndex = dpis.Count;
-            dpis.Add(dpi);
+            service.SaveOnboardSlot(slot, change(MouseService.EditFor(slot)));
+            Render(force: true);
+            return true;
         }
-        if (dpis.Count == 0 || defaultIndex < 0 || shiftIndex < 0)
+        catch (Exception error)
         {
-            MessageBox.Show(owner, "Enter at least one DPI speed, and pick a default and a DPI Shift speed from them.", "Check the DPI speeds", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            Toast(error.Message);
+            Render(force: true);
+            return false;
         }
-        OnboardEdit final = new(edit.Name, edit.Enabled, edit.ReportIntervalMs, dpis, defaultIndex, shiftIndex, edit.Buttons, edit.ShiftButtons);
-        try { service.SaveOnboardSlot(slot, final); }
-        catch (Exception error) { MessageBox.Show(owner, error.Message, "Could not save to the mouse", MessageBoxButton.OK, MessageBoxImage.Error); }
-        Render(force: true);
     }
 
     // ── Restore and switching ─────────────────────────────────────────────────
@@ -327,21 +269,18 @@ internal sealed class OnboardCard : ContentControl
         Directory.CreateDirectory(MouseService.OnboardBackupFolder);
         Microsoft.Win32.OpenFileDialog dialog = new() { Filter = "On-board memory backup (*.json)|*.json", InitialDirectory = MouseService.OnboardBackupFolder };
         if (dialog.ShowDialog(owner) != true) return;
-        try
-        {
-            service.RestoreOnboard(dialog.FileName);
-            draft = null;
-        }
+        try { service.RestoreOnboard(dialog.FileName); }
         catch (Exception error) { MessageBox.Show(owner, error.Message, "Could not restore the backup", MessageBoxButton.OK, MessageBoxImage.Error); }
         Render(force: true);
     }
 
     private void SwitchTo(OnboardSlot slot)
     {
-        Window owner = Window.GetWindow(this);
         try { service.SwitchToOnboard(slot); }
-        catch (Exception error) { MessageBox.Show(owner, error.Message, "Could not switch", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception error) { Toast(error.Message); }
     }
+
+    private void Toast(string text) => (Window.GetWindow(this) as MainWindow)?.ShowToast(text);
 
     // ── Shared pieces ─────────────────────────────────────────────────────────
 
@@ -371,8 +310,8 @@ internal sealed class OnboardCard : ContentControl
         return new StackPanel { Margin = new Thickness(0, 22, 0, 6), VerticalAlignment = VerticalAlignment.Center, Children = { Ui.Row(14, Key("Accent", "Default"), Key("Warning", "DPI Shift")) } };
     }
 
-    /// <summary>Button and G-shift actions; with a draft, pending changes show in the accent colour.</summary>
-    private static Grid BindingTable(OnboardProfile profile, Draft? edit)
+    /// <summary>Each button's action and its G-shift action, as stored on the mouse.</summary>
+    private static Grid BindingTable(OnboardProfile profile)
     {
         Grid table = new() { Margin = new Thickness(0, 14, 0, 0) };
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
@@ -400,24 +339,18 @@ internal sealed class OnboardCard : ContentControl
                 Cell(stripe, line, 0);
             }
             Cell(Ui.Text(OnboardProfiles.ControlName(binding.Index), size: 12.5, color: "Muted").With(new Thickness(0, 6, 8, 6)), line, 0);
-            uint? pending = edit?.Buttons.TryGetValue(binding.Index, out uint code) == true ? code : null;
-            Cell(BindingText(binding, pending), line, 1);
-            OnboardBinding? shift = shifted.GetValueOrDefault(binding.Index);
-            uint? pendingShift = edit?.ShiftButtons.TryGetValue(binding.Index, out uint shiftCode) == true ? shiftCode : null;
-            Cell(shift is null && pendingShift is null ? Ui.Text("Same", size: 12.5, color: "Faint").With(new Thickness(0, 6, 8, 6)) : BindingText(shift, pendingShift), line, 2);
+            Cell(BindingText(binding), line, 1);
+            Cell(shifted.GetValueOrDefault(binding.Index) is { } shift ? BindingText(shift) : Ui.Text("Same", size: 12.5, color: "Faint").With(new Thickness(0, 6, 8, 6)), line, 2);
             line++;
         }
         return table;
     }
 
-    private static TextBlock BindingText(OnboardBinding? stored, uint? pending)
+    private static TextBlock BindingText(OnboardBinding binding)
     {
-        string raw = pending is uint code ? code.ToString("X8") : stored?.Raw ?? "";
-        string description = pending is uint value ? OnboardProfiles.Describe(value) : stored?.Description ?? "";
-        bool changed = pending is not null && raw != stored?.Raw;
-        bool quiet = description is "No action" or "Disabled";
-        TextBlock text = Ui.Text(description, size: 12.5, bold: changed, color: changed ? "Accent" : quiet ? "Faint" : "Text").With(new Thickness(0, 6, 8, 6));
-        text.ToolTip = changed ? $"Will be stored as {raw} (now {stored?.Raw ?? "empty"})" : $"Stored as {raw}";
+        bool quiet = binding.Description is "No action" or "Disabled";
+        TextBlock text = Ui.Text(binding.Description, size: 12.5, color: quiet ? "Faint" : "Text").With(new Thickness(0, 6, 8, 6));
+        text.ToolTip = $"Stored as {binding.Raw}";
         return text;
     }
 }

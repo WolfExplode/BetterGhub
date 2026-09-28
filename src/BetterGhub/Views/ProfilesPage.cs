@@ -57,9 +57,8 @@ internal sealed class ProfilesPage : UserControl, IPage
     }
 
     /// <summary>For --snapshot: scrolls the on-board memory card into view.</summary>
-    internal void ShowOnboard(bool editing = false)
+    internal void ShowOnboard()
     {
-        if (editing) onboard.StartEditing(service.ActiveProfile);
         UpdateLayout();
         ((ScrollViewer)Content).ScrollToEnd();
     }
