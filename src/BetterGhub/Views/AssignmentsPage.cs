@@ -13,6 +13,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private readonly MainWindow shell;
     private readonly MouseDiagram diagram;
     private readonly StackPanel panel = new();
+    /// <summary>The picker's title, tabs and search box, kept above the scrolling list.</summary>
+    private readonly StackPanel header = new();
     private readonly Border calibrationBanner = new();
     private readonly DockPanel toolbar = new() { LastChildFill = false };
     private readonly RadioButton topView = new() { Content = "TOP", GroupName = "View" };
@@ -22,6 +24,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private string tabKey = "";
     private string search = "";
     private bool calibrating;
+    /// <summary>Scroll the list to the selected control's assignment on the next render, after picking a control.</summary>
+    private bool revealCurrent;
     /// <summary>Left and right click stay locked until the warning is acknowledged, once per session.</summary>
     private readonly HashSet<string> unlockedClicks = [];
 
@@ -38,7 +42,14 @@ internal sealed class AssignmentsPage : UserControl, IPage
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(350) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        Border left = Ui.Card(Ui.Scroll(panel), new Thickness(22, 20, 14, 20));
+        Grid leftContent = new();
+        leftContent.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        leftContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        leftContent.Children.Add(header);
+        ScrollViewer panelScroll = Ui.Scroll(panel);
+        Grid.SetRow(panelScroll, 1);
+        leftContent.Children.Add(panelScroll);
+        Border left = Ui.Card(leftContent, new Thickness(22, 20, 14, 20));
         layout.Children.Add(left);
 
         Grid stage = new() { Margin = new Thickness(24, 0, 0, 0) };
@@ -134,6 +145,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private void Select(MouseControl control)
     {
         selected = control;
+        revealCurrent = true;
         diagram.Selected = control;
         if (calibrating && control.Calibratable) service.StartLearning(control);
         else if (service.Learning is not null) service.CancelLearning();
@@ -250,39 +262,42 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private void RenderPanel()
     {
         panel.Children.Clear();
+        header.Children.Clear();
         MouseProfile profile = service.ActiveProfile;
         int? bit = service.Settings.BitFor(selected);
+        // Notices sit above the picker in the fixed header; without a picker they scroll with the rest.
+        StackPanel top = bit is not null && !ClickLocked(selected) ? header : panel;
 
         if (diagram.ShiftLayer)
-            panel.Children.Add(Ui.Text(
+            top.Children.Add(Ui.Text(
                 profile.Assignments.ContainsValue(BuiltinActions.GShift)
                     ? "Editing the G-Shift layer. These actions apply while the G-Shift button is held."
                     : "Editing the G-Shift layer. Assign G-Shift to a button on the Default layer to use it.",
                 "Body", size: 12, color: "Accent", wrap: true).With(new Thickness(0, 0, 8, 16)));
 
         if (bit is null && service.Learning?.Id != selected.Id)
-            panel.Children.Add(Ui.Text($"{selected.Label} isn't calibrated yet. Use Calibrate buttons to set it.", "Body", size: 12, color: "Warning", wrap: true).With(new Thickness(0, 0, 8, 12)));
+            top.Children.Add(Ui.Text($"{selected.Label} isn't calibrated yet. Use Calibrate buttons to set it.", "Body", size: 12, color: "Warning", wrap: true).With(new Thickness(0, 0, 8, 12)));
 
         if (service.Learning?.Id == selected.Id)
         {
-            panel.Children.Add(LearningBox().With(new Thickness(0, 0, 8, 22)));
+            top.Children.Add(LearningBox().With(new Thickness(0, 0, 8, 22)));
         }
         else if (calibrating && service.Settings.ControlBits.ContainsKey(selected.Id))
         {
             Button reset = Ui.Button($"Reset {selected.Label} calibration", () => { service.ForgetCalibration(selected); Refresh(); }, "GhostBtn");
             reset.HorizontalAlignment = HorizontalAlignment.Left;
-            panel.Children.Add(reset.With(new Thickness(0, 0, 0, 22)));
+            top.Children.Add(reset.With(new Thickness(0, 0, 0, 22)));
         }
         if (bit is null) return;
         if (ClickLocked(selected))
         {
-            panel.Children.Add(ClickWarning().With(new Thickness(0, 0, 8, 22)));
+            top.Children.Add(ClickWarning().With(new Thickness(0, 0, 8, 22)));
             return;
         }
 
         // Assignment picker
-        panel.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
-        panel.Children.Add(Ui.Text($"Drag an action onto a button on the mouse, or right-click it to assign it to {selected.Label}.", "Body", size: 12, wrap: true).With(new Thickness(0, 0, 8, 8)));
+        header.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
+        header.Children.Add(Ui.Text($"Drag an action onto a button on the mouse, or right-click it to assign it to {selected.Label}.", "Body", size: 12, wrap: true).With(new Thickness(0, 0, 8, 8)));
         Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
         string current = bindings.GetValueOrDefault(bit.Value) ?? "";
         string key = selected.Id + (diagram.ShiftLayer ? "/shift" : "");
@@ -300,12 +315,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
             item.Checked += (_, _) => { if (tab == name) return; tab = name; RenderPanel(); };
             tabs.Children.Add(item);
         }
-        panel.Children.Add(tabs);
+        header.Children.Add(tabs);
 
         StackPanel options = new();
         TextBox filter = new() { Text = search, Margin = new Thickness(0, 0, 8, 10) };
         filter.TextChanged += (_, _) => { search = filter.Text; RenderOptions(options, bit.Value, current, bindings); };
-        panel.Children.Add(Ui.Placeholder(filter, tab switch
+        header.Children.Add(Ui.Placeholder(filter, tab switch
         {
             "Commands" => "Search for a command",
             "Keys" => "Search for a key",
@@ -315,6 +330,19 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
         panel.Children.Add(options);
         RenderOptions(options, bit.Value, current, bindings);
+        if (revealCurrent) RevealCurrent(options);
+    }
+
+    /// <summary>Scrolls the checked option row into view once the new list has been laid out.</summary>
+    private void RevealCurrent(StackPanel options)
+    {
+        revealCurrent = false;
+        RadioButton? row = options.Children.OfType<RadioButton>()
+            .Concat(options.Children.OfType<StackPanel>().SelectMany(p => p.Children.OfType<RadioButton>()))
+            .FirstOrDefault(r => r.IsChecked == true);
+        if (row is null) return;
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+            row.BringIntoView(new Rect(0, -48, row.ActualWidth, row.ActualHeight + 96)));
     }
 
     private static readonly string[] Tabs = ["Commands", "Keys", "Macros", "System"];
@@ -388,7 +416,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
             case "Macros":
                 if (service.IsOnboard)
-                    options.Children.Add(Ui.Text("Macros aren't available for on-board profiles.", "Body", size: 12, wrap: true).With(new Thickness(2, 0, 8, 8)));
+                    options.Children.Add(Ui.Text("The mouse can store macros made of keys, media keys, clicks and delays that play once or repeat while holding.", "Body", size: 12, wrap: true).With(new Thickness(2, 0, 8, 8)));
                 StackPanel list = new();
                 options.Children.Add(list);
                 foreach (MacroDefinition macro in service.Settings.Macros.Where(m => Matches(m.Name)))
@@ -399,7 +427,6 @@ internal sealed class AssignmentsPage : UserControl, IPage
                     list.Children.Add(NoMatches());
                 Button create = Ui.Button("New macro", () => CreateMacroFor(bit), "GhostBtn", "");
                 create.HorizontalAlignment = HorizontalAlignment.Left;
-                create.IsEnabled = !service.IsOnboard;
                 options.Children.Add(create.With(new Thickness(0, 6, 0, 0)));
                 return;
 
@@ -485,10 +512,10 @@ internal sealed class AssignmentsPage : UserControl, IPage
     /// </summary>
     private bool Unavailable(RadioButton row, string id)
     {
-        if (!service.IsOnboard || OnboardProfiles.Encode(id) is not null) return false;
+        if (!service.IsOnboard || service.OnboardRefusal(id) is not { } why) return false;
         row.IsEnabled = false;
         row.Opacity = 0.4;
-        row.ToolTip = "Not available for on-board profiles";
+        row.ToolTip = service.Settings.IsMacro(id) ? $"Can't be stored on the mouse: {why}" : "Not available for on-board profiles";
         ToolTipService.SetShowOnDisabled(row, true);
         return true;
     }
@@ -659,7 +686,9 @@ internal sealed class AssignmentsPage : UserControl, IPage
     {
         MacroDefinition macro = new() { Name = $"{selected.Label} macro" };
         service.Settings.Macros.Add(macro);
-        service.Assign(diagram.ShiftLayer, bit, macro.Id);
+        // The mouse can't store a macro without steps, so on-board it's assigned once it has some.
+        if (service.IsOnboard) service.Save();
+        else service.Assign(diagram.ShiftLayer, bit, macro.Id);
         shell.OpenMacro(macro);
     }
 

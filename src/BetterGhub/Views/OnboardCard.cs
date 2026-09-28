@@ -50,6 +50,7 @@ internal sealed class OnboardCard : ContentControl
         if (connected)
         {
             StackPanel actions = Ui.Row(8,
+                Ui.Button("Dump memory", service.DumpOnboardMemory, "GhostBtn", "", "Save a hex dump of every sector in the mouse's memory (read-only)"),
                 Ui.Button("Restore backup…", Restore, "GhostBtn", "", "Write a saved backup of all slots back to the mouse"),
                 Ui.Button("Read again", service.ReadOnboardMemory, "GhostBtn", ""));
             DockPanel.SetDock(actions, Dock.Right);

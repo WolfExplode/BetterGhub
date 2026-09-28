@@ -272,8 +272,11 @@ internal sealed class MouseService : IDisposable
                 StateChanged?.Invoke();
                 break;
             case OnboardWriteEvent written:
+                // The bridge re-reads before reporting, so Onboard is already what the mouse holds now.
                 OnboardBusy = false;
                 Write((written.Success ? "On-board memory: " : "On-board write failed: ") + written.Message);
+                if (onboardDirty) FlushOnboard(); // Edits made while the write was in flight, diffed against the fresh read.
+                else RebuildOnboardProfile(); // The read was held back from the pages while the write was in flight.
                 OnboardWritten?.Invoke(written.Success, written.Message);
                 StateChanged?.Invoke();
                 break;
@@ -300,6 +303,9 @@ internal sealed class MouseService : IDisposable
                 BatteryPercent = battery.Percent;
                 BatteryCharging = battery.Charging;
                 StateChanged?.Invoke();
+                break;
+            case OnboardDumpEvent dump:
+                SaveDump(dump.Text);
                 break;
             case DeviceErrorEvent error:
                 Write("Device error: " + error.Message);
@@ -429,9 +435,42 @@ internal sealed class MouseService : IDisposable
         MouseControl? control = Settings.ControlFor(bit);
         if (control is null || OnboardProfiles.IndexFor(control.Id) is null)
             return $"{control?.Label ?? "This control"} isn't available for on-board profiles";
-        if (!string.IsNullOrEmpty(id) && OnboardProfiles.Encode(id) is null)
-            return $"{Settings.DescribeAssignment(id)} isn't available for on-board profiles";
+        if (!string.IsNullOrEmpty(id) && OnboardCode(id).Refusal is { } why)
+            return $"{Settings.DescribeAssignment(id)} can't be stored on the mouse: {why}";
         return null;
+    }
+
+    /// <summary>Why an on-board slot can't store <paramref name="id"/>, or null when it can (a plain binding, or a macro of keys and delays).</summary>
+    public string? OnboardRefusal(string id) => OnboardCode(id).Refusal;
+
+    /// <summary>An assignment as the mouse stores it: a binding, or a macro's byte code; otherwise why it can't.</summary>
+    private (uint? Binding, byte[]? Macro, string? Refusal) OnboardCode(string id)
+    {
+        if (OnboardProfiles.Encode(id) is uint binding) return (binding, null, null);
+        if (Settings.Macros.FirstOrDefault(m => m.Id == id) is not { } macro) return (null, null, "the mouse has no equivalent");
+        return OnboardMacros.Encode(macro, out string reason) is { } code ? (null, code, null) : (null, null, reason);
+    }
+
+    /// <summary>A stored binding as an assignment; a macro BetterGhub has with the same byte code comes back as that macro.</summary>
+    private string DecodeOnboard(uint binding)
+    {
+        if (OnboardMacros.Target(binding) is var (sector, offset) && Onboard?.SpareSectors.GetValueOrDefault(sector) is { } data && offset < data.Length)
+        {
+            byte[] code = OnboardMacros.Read(data, offset);
+            foreach (MacroDefinition macro in Settings.Macros)
+                if (OnboardMacros.Encode(macro, out _) is { } candidate && candidate.AsSpan().SequenceEqual(code)) return macro.Id;
+        }
+        return OnboardProfiles.Decode(binding);
+    }
+
+    /// <summary>Adds an assignment to an edit's bindings or macros; false when the mouse can't store it.</summary>
+    private bool AddOnboard(string id, int index, Dictionary<int, uint> bindings, Dictionary<int, byte[]> macros)
+    {
+        (uint? binding, byte[]? macro, _) = OnboardCode(id);
+        if (binding is uint code) bindings[index] = code;
+        else if (macro is not null) macros[index] = macro;
+        else return false;
+        return true;
     }
 
     private void HandleAssignment(int bit, bool down, bool pulse = false)
@@ -591,6 +630,28 @@ internal sealed class MouseService : IDisposable
         bridge.ReadOnboardMemory();
     }
 
+    /// <summary>Reads every flash sector and saves a hex dump next to the backups, then opens it (read-only).</summary>
+    public void DumpOnboardMemory()
+    {
+        if (State != ConnectionState.Connected) return;
+        Write("Dumping on-board memory…");
+        bridge.DumpOnboardMemory();
+    }
+
+    private void SaveDump(string text)
+    {
+        try
+        {
+            Directory.CreateDirectory(OnboardBackupFolder);
+            string path = Path.Combine(OnboardBackupFolder, $"dump-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+            File.WriteAllText(path, text);
+            Write("On-board memory dumped to " + path);
+            Notice?.Invoke("Memory dump saved");
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception error) { Write("Could not save the memory dump: " + error.Message); }
+    }
+
     // ── On-board memory ───────────────────────────────────────────────────────
 
     public static string OnboardBackupFolder => Path.Combine(Path.GetDirectoryName(Settings.FilePath) ?? ".", "onboard-backups");
@@ -621,6 +682,7 @@ internal sealed class MouseService : IDisposable
         int defaultIndex = Nearest(profile.Dpi), shiftIndex = Nearest(profile.ShiftDpi);
         if (stages[shiftIndex] != profile.ShiftDpi) notes.Add($"DPI Shift {profile.ShiftDpi} isn't one of the speeds; the mouse will use {stages[shiftIndex]}");
         Dictionary<int, uint> buttons = [], shifted = [];
+        Dictionary<int, byte[]> macros = [], shiftMacros = [];
         foreach (MouseControl control in MouseControls.All)
         {
             if (OnboardProfiles.IndexFor(control.Id) is not int index) continue;
@@ -628,12 +690,12 @@ internal sealed class MouseService : IDisposable
             string normal = bit is int b && profile.Assignments.GetValueOrDefault(b) is { Length: > 0 } assigned ? assigned : OnboardProfiles.NativeAction(control);
             string shift = normal == BuiltinActions.GShift ? normal
                 : bit is int s && profile.ShiftAssignments.GetValueOrDefault(s) is { Length: > 0 } shiftAssigned ? shiftAssigned : normal;
-            if (OnboardProfiles.Encode(normal) is uint code) buttons[index] = code;
-            else notes.Add($"{control.Label}: {Settings.DescribeAssignment(normal)} can't be stored on the mouse; left as it was");
-            if (OnboardProfiles.Encode(shift) is uint shiftCode) shifted[index] = shiftCode;
-            else if (shift != normal) notes.Add($"{control.Label} with G-Shift: {Settings.DescribeAssignment(shift)} can't be stored on the mouse; left as it was");
+            if (!AddOnboard(normal, index, buttons, macros))
+                notes.Add($"{control.Label}: {Settings.DescribeAssignment(normal)} can't be stored on the mouse; left as it was");
+            if (!AddOnboard(shift, index, shifted, shiftMacros) && shift != normal)
+                notes.Add($"{control.Label} with G-Shift: {Settings.DescribeAssignment(shift)} can't be stored on the mouse; left as it was");
         }
-        return new OnboardEdit(profile.Name, enabled, 1000 / Math.Clamp(profile.ReportRate, 125, 1000), stages, defaultIndex, shiftIndex, buttons, shifted);
+        return new OnboardEdit(profile.Name, enabled, 1000 / Math.Clamp(profile.ReportRate, 125, 1000), stages, defaultIndex, shiftIndex, buttons, shifted, macros, shiftMacros);
     }
 
     /// <summary>Backs up every slot (unless <paramref name="backup"/> is false), then writes the edited slot and the directory if enabling changed.</summary>
@@ -641,7 +703,9 @@ internal sealed class MouseService : IDisposable
     {
         OnboardMemory memory = RequireOnboard();
         OnboardProfile profile = slot.Profile ?? throw new InvalidOperationException("This slot could not be read");
-        List<SectorWrite> writes = [new(slot.Sector, profile.Sector, OnboardProfiles.Build(profile.Sector, edit))];
+        List<SectorWrite> writes = [];
+        edit = PlaceMacros(memory, slot, edit, writes);
+        writes.Add(new(slot.Sector, profile.Sector, OnboardProfiles.Build(profile.Sector, edit)));
         if (edit.Enabled != slot.Enabled)
         {
             if (!edit.Enabled && memory.Slots.Count(s => s.Enabled) <= 1) throw new InvalidOperationException("Keep at least one slot enabled");
@@ -650,6 +714,28 @@ internal sealed class MouseService : IDisposable
         if (!edit.Enabled && slot.Sector == OnboardSector) throw new InvalidOperationException("The mouse is running this slot; switch to another one first");
         if (backup) BackupOnboard(memory);
         SendWrite(writes, $"Saving {(edit.Name.Length > 0 ? edit.Name : $"Profile {slot.Number}")} to slot {slot.Number}");
+    }
+
+    /// <summary>
+    /// Stores the edit's macros in spare sectors (adding those writes, which go before the slot's) and returns the
+    /// edit with each macro's button bound to where it landed. Macros any slot still binds are left in place.
+    /// </summary>
+    private static OnboardEdit PlaceMacros(OnboardMemory memory, OnboardSlot slot, OnboardEdit edit, List<SectorWrite> writes)
+    {
+        if (edit.MacroButtons is not { Count: > 0 } && edit.MacroShiftButtons is not { Count: > 0 }) return edit;
+        Dictionary<int, uint> buttons = new(edit.Buttons), shifted = new(edit.ShiftButtons);
+        foreach (int index in edit.MacroButtons?.Keys ?? []) buttons[index] = 0x90000000;
+        foreach (int index in edit.MacroShiftButtons?.Keys ?? []) shifted[index] = 0x90000000;
+        // Everything that stays bound once this is written: the other slots, and this slot without the new macros.
+        byte[] draft = OnboardProfiles.Build(slot.Profile!.Sector, edit with { Buttons = buttons, ShiftButtons = shifted });
+        IEnumerable<uint> bound = memory.Slots.Where(s => s.Sector != slot.Sector && s.Profile is not null).Select(s => s.Profile!.Sector).Append(draft)
+            .SelectMany(sector => Enumerable.Range(0, 16).SelectMany(i => new[] { OnboardProfiles.BindingAt(sector, i, shift: false), OnboardProfiles.BindingAt(sector, i, shift: true) }))
+            .OfType<uint>();
+        OnboardMacroPlacer placer = new(memory, bound);
+        foreach ((int index, byte[] macro) in edit.MacroButtons ?? new Dictionary<int, byte[]>()) buttons[index] = placer.Place(macro);
+        foreach ((int index, byte[] macro) in edit.MacroShiftButtons ?? new Dictionary<int, byte[]>()) shifted[index] = placer.Place(macro);
+        foreach ((int sector, byte[] data) in placer.Changed) writes.Add(new(sector, memory.SpareSectors[sector], data));
+        return edit with { Buttons = buttons, ShiftButtons = shifted, MacroButtons = null, MacroShiftButtons = null };
     }
 
     /// <summary>Writes a backup file's sectors back, after backing up what's there now. Returns the new backup's path.</summary>
@@ -663,8 +749,8 @@ internal sealed class MouseService : IDisposable
         {
             int sector = int.Parse(entry.Name);
             byte[] data = Convert.FromHexString(entry.Value.GetString() ?? "");
-            byte[]? current = sector == 0 ? memory.Directory : memory.Slots.FirstOrDefault(s => s.Sector == sector)?.Profile?.Sector;
-            if (current is null) throw new InvalidDataException($"Sector {sector} in the backup isn't a slot on this mouse");
+            byte[]? current = memory.SectorData(sector);
+            if (current is null) throw new InvalidDataException($"Sector {sector} in the backup isn't on this mouse");
             if (data.Length != memory.SectorSize) throw new InvalidDataException("The backup is from a mouse with a different memory layout");
             writes.Add(new(sector, current, data));
         }
@@ -729,9 +815,9 @@ internal sealed class MouseService : IDisposable
         foreach (MouseControl control in MouseControls.All)
         {
             if (OnboardProfiles.IndexFor(control.Id) is not int index || Settings.BitFor(control) is not int bit) continue;
-            string normal = OnboardProfiles.BindingAt(stored.Sector, index, shift: false) is uint code ? OnboardProfiles.Decode(code) : OnboardProfiles.NativeAction(control);
+            string normal = OnboardProfiles.BindingAt(stored.Sector, index, shift: false) is uint code ? DecodeOnboard(code) : OnboardProfiles.NativeAction(control);
             profile.Assignments[bit] = normal;
-            if (OnboardProfiles.BindingAt(stored.Sector, index, shift: true) is uint shiftCode && OnboardProfiles.Decode(shiftCode) is var shifted && shifted != normal)
+            if (OnboardProfiles.BindingAt(stored.Sector, index, shift: true) is uint shiftCode && DecodeOnboard(shiftCode) is var shifted && shifted != normal)
                 profile.ShiftAssignments[bit] = shifted;
         }
         return profile;
@@ -762,6 +848,7 @@ internal sealed class MouseService : IDisposable
         onboardDirty = false;
 
         Dictionary<int, uint> buttons = [], shifted = [];
+        Dictionary<int, byte[]> macros = [], shiftMacros = [];
         foreach (MouseControl control in MouseControls.All)
         {
             if (OnboardProfiles.IndexFor(control.Id) is not int index || Settings.BitFor(control) is not int bit) continue;
@@ -769,18 +856,18 @@ internal sealed class MouseService : IDisposable
             string Shift(MouseProfile p, string normal) => normal == BuiltinActions.GShift ? normal
                 : p.ShiftAssignments.GetValueOrDefault(bit) is { Length: > 0 } a ? a : normal;
             string normal = Normal(edited), before = Normal(baseline);
-            if (normal != before && OnboardProfiles.Encode(normal) is uint code) buttons[index] = code;
+            if (normal != before) AddOnboard(normal, index, buttons, macros);
             string shift = Shift(edited, normal), shiftBefore = Shift(baseline, before);
-            if (shift != shiftBefore && OnboardProfiles.Encode(shift) is uint shiftCode) shifted[index] = shiftCode;
+            if (shift != shiftBefore) AddOnboard(shift, index, shifted, shiftMacros);
         }
         List<int> stages = edited.DpiStages.Where(d => d is >= 100 and <= 25600).Distinct().Take(5).ToList();
         if (stages.Count == 0) stages = [edited.Dpi];
         int Nearest(int dpi) => stages.IndexOf(stages.MinBy(s => Math.Abs(s - dpi)));
         int shiftIndex = Nearest(edited.ShiftDpi);
-        OnboardEdit edit = new(stored.Name, slot.Enabled, 1000 / Math.Clamp(edited.ReportRate, 125, 1000), stages, Nearest(edited.Dpi), shiftIndex, buttons, shifted);
+        OnboardEdit edit = new(stored.Name, slot.Enabled, 1000 / Math.Clamp(edited.ReportRate, 125, 1000), stages, Nearest(edited.Dpi), shiftIndex, buttons, shifted, macros, shiftMacros);
         try
         {
-            if (OnboardProfiles.Build(stored.Sector, edit).AsSpan().SequenceEqual(stored.Sector)) return;
+            if (macros.Count == 0 && shiftMacros.Count == 0 && OnboardProfiles.Build(stored.Sector, edit).AsSpan().SequenceEqual(stored.Sector)) return;
             SaveOnboardSlot(slot, edit, backup: !onboardBackedUp);
             onboardBackedUp = true; // One backup per on-board session, not one per change.
         }
@@ -813,6 +900,8 @@ internal sealed class MouseService : IDisposable
         Dictionary<string, string> sectors = new() { ["0"] = Convert.ToHexString(memory.Directory) };
         foreach (OnboardSlot slot in memory.Slots)
             if (slot.Profile is { } profile) sectors[slot.Sector.ToString()] = Convert.ToHexString(profile.Sector);
+        foreach ((int sector, byte[] data) in memory.SpareSectors) // Macros; erased sectors are left out.
+            if (data.Any(b => b != 0xFF)) sectors[sector.ToString()] = Convert.ToHexString(data);
         string path = Path.Combine(OnboardBackupFolder, $"onboard-{DateTime.Now:yyyyMMdd-HHmmss}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(new
         {
@@ -916,7 +1005,7 @@ internal sealed class MouseService : IDisposable
         byte[] directory = new byte[255];
         Array.Fill(directory, (byte)0xFF);
         for (int n = 1; n <= 5; n++) new byte[] { 0, (byte)n, (byte)(n <= 2 ? 1 : 0), 0xFF }.CopyTo(directory, (n - 1) * 4);
-        return new OnboardMemory([.. Enumerable.Range(1, 5).Select(n => new OnboardSlot(n, n, n <= 2, profile))], OnboardProfiles.WithChecksum(directory), 255, buttons.Length);
+        return new OnboardMemory([.. Enumerable.Range(1, 5).Select(n => new OnboardSlot(n, n, n <= 2, profile))], OnboardProfiles.WithChecksum(directory), 255, buttons.Length, new Dictionary<int, byte[]>());
     }
 
     public void Dispose()

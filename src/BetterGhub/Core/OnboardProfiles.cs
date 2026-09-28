@@ -25,7 +25,16 @@ public sealed record OnboardProfile(
 public sealed record OnboardBinding(int Index, string Description, string Raw);
 
 /// <summary>Everything read from on-board memory, with the raw directory kept for writing it back.</summary>
-public sealed record OnboardMemory(IReadOnlyList<OnboardSlot> Slots, byte[] Directory, int SectorSize, int ButtonCount);
+/// <remarks>
+/// <see cref="SpareSectors"/> holds every other user sector (where macros live), read in full, or all 0xFF when
+/// its first 16 bytes were erased.
+/// </remarks>
+public sealed record OnboardMemory(IReadOnlyList<OnboardSlot> Slots, byte[] Directory, int SectorSize, int ButtonCount, IReadOnlyDictionary<int, byte[]> SpareSectors)
+{
+    /// <summary>A user sector's contents as last read: the directory, a slot, or a spare sector.</summary>
+    public byte[]? SectorData(int sector) =>
+        sector == 0 ? Directory : Slots.FirstOrDefault(s => s.Sector == sector)?.Profile?.Sector ?? SpareSectors.GetValueOrDefault(sector);
+}
 
 /// <summary>A change to one slot. Bindings map binding index to the 4 stored bytes (big-endian).</summary>
 public sealed record OnboardEdit(
@@ -36,7 +45,10 @@ public sealed record OnboardEdit(
     int DefaultDpiIndex,
     int ShiftDpiIndex,
     IReadOnlyDictionary<int, uint> Buttons,
-    IReadOnlyDictionary<int, uint> ShiftButtons);
+    IReadOnlyDictionary<int, uint> ShiftButtons,
+    IReadOnlyDictionary<int, byte[]>? MacroButtons = null,
+    IReadOnlyDictionary<int, byte[]>? MacroShiftButtons = null);
+// MacroButtons: on-board macros (see OnboardMacros) to store and bind, by binding index; they override Buttons.
 
 /// <summary>
 /// HID++ 0x8100 profile format 3 (G502 X): report rate, default and shift DPI index, five DPI levels,
@@ -274,18 +286,24 @@ public static class OnboardProfiles
         if (Assignments.KeyCombo(assignment) is not { } combo) return null;
         string[] parts = combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 1 && ConsumerUsage(parts[0]) is int consumer) return 0x80030000u | (uint)consumer;
+        return KeyCode(combo) is var (modifiers, key) ? 0x80020000u | ((uint)modifiers << 8) | key : null;
+    }
+
+    /// <summary>A combo ("Ctrl+Shift+T") as modifier bits and one HID usage (0 for modifiers alone), or null when it can't be stored.</summary>
+    internal static (byte Modifiers, byte Key)? KeyCode(string combo)
+    {
         byte modifiers = 0;
         byte? key = null;
-        foreach (string part in parts)
+        foreach (string part in combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
             if (ModifierBit(part) is int bit) modifiers |= (byte)bit;
             else if (key is null && KeyUsage(part) is byte usage) key = usage;
             else return null; // A second key or one without a HID code.
         }
-        return 0x80020000u | ((uint)modifiers << 8) | (key ?? 0);
+        return modifiers == 0 && key is null ? null : (modifiers, key ?? 0);
     }
 
-    private static int? ModifierBit(string name) => name.ToLowerInvariant() switch
+    internal static int? ModifierBit(string name) => name.ToLowerInvariant() switch
     {
         "ctrl" or "control" or "lctrl" or "leftctrl" => 0x01,
         "shift" or "lshift" or "leftshift" => 0x02,
@@ -298,7 +316,7 @@ public static class OnboardProfiles
         _ => null
     };
 
-    private static int? ConsumerUsage(string name) => name.ToLowerInvariant() switch
+    internal static int? ConsumerUsage(string name) => name.ToLowerInvariant() switch
     {
         "volumeup" => 0xE9,
         "volumedown" => 0xEA,

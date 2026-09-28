@@ -54,6 +54,8 @@ internal sealed class HidppBridge : IDisposable
     public void SetDpi(int dpi) => Send("dpi", dpi);
     public void SetReportInterval(int milliseconds) => Send("rate", milliseconds);
     public void ReadOnboardMemory() => Send("onboard", 0);
+    /// <summary>Reads every flash sector (read-only) and emits an <see cref="OnboardDumpEvent"/>.</summary>
+    public void DumpOnboardMemory() => Send("dump", 0);
     /// <summary>Writes whole sectors; each is skipped unless the mouse still holds <c>Expected</c>.</summary>
     public void WriteOnboard(IReadOnlyList<SectorWrite> sectors) => Send("write", 0, sectors);
     /// <summary>Runs the mouse from the on-board slot in <paramref name="sector"/>, or host mode for 0. The bridge stays connected.</summary>
@@ -138,12 +140,17 @@ internal sealed class HidppBridge : IDisposable
                         if (ReadOnboard(session, modeIndex) is { } memory) Emit(new OnboardMemoryEvent(memory));
                         else Emit(new DeviceErrorEvent("Could not read on-board memory"));
                     }
+                    else if (command.Command == "dump")
+                    {
+                        Emit(new OnboardDumpEvent(DumpMemory(session, modeIndex)));
+                    }
                     else if (command.Command == "write")
                     {
                         IReadOnlyList<SectorWrite> writes = (IReadOnlyList<SectorWrite>)command.Data!;
+                        OnboardWriteEvent result;
                         try
                         {
-                            OnboardWriteEvent result = WriteSectors(session, modeIndex, writes);
+                            result = WriteSectors(session, modeIndex, writes);
                             if (result.Success && onboardSector != 0 && writes.FirstOrDefault(w => w.Sector == onboardSector) is { } running)
                             {
                                 // Re-select the running slot so it picks up new bindings. That doesn't re-apply its speeds, so when
@@ -152,10 +159,12 @@ internal sealed class HidppBridge : IDisposable
                                 if (!running.Data.AsSpan(1, 12).SequenceEqual(running.Expected.AsSpan(1, 12)))
                                     session.Call(modeIndex, 12, running.Data[1], 0, 0);
                             }
-                            Emit(result);
                         }
-                        catch (HidppErrorException error) { Emit(new OnboardWriteEvent(false, "The mouse refused the write: " + error.Message)); }
+                        catch (HidppErrorException error) { result = new OnboardWriteEvent(false, "The mouse refused the write: " + error.Message); }
+                        // Re-read before reporting the result: until the result arrives the app holds further edits back,
+                        // so the next write is always made against what the mouse holds now.
                         if (ReadOnboard(session, modeIndex) is { } memory) Emit(new OnboardMemoryEvent(memory));
+                        Emit(result);
                     }
                     else if (command.Command == "mode")
                     {
@@ -242,8 +251,9 @@ internal sealed class HidppBridge : IDisposable
     }
 
     /// <summary>
-    /// Reads the slot directory (sector 0) and every slot's profile sector with 0x8100 memoryRead.
-    /// Read-only; null when the mouse refuses.
+    /// Reads the slot directory (sector 0), every slot's profile sector and the other user sectors (where macros
+    /// live) with 0x8100 memoryRead. A spare sector whose first 16 bytes are erased is taken as empty, which keeps
+    /// this quick; a write checks the whole sector first anyway. Read-only; null when the mouse refuses.
     /// </summary>
     private static OnboardMemory? ReadOnboard(Session session, byte modeIndex)
     {
@@ -252,7 +262,7 @@ internal sealed class HidppBridge : IDisposable
             // getDescription: memory model, profile format, macro format, profile count, factory profile count,
             // button count, sector count, sector size (big-endian).
             byte[] description = session.Call(modeIndex, 0, 0, 0, 0);
-            int profileCount = description[3], buttonCount = description[5], sectorSize = (description[7] << 8) | description[8];
+            int profileCount = description[3], buttonCount = description[5], sectorCount = description[6], sectorSize = (description[7] << 8) | description[8];
             if (description[1] != 3 || sectorSize < 64) return null; // Unknown profile format.
             List<OnboardSlot> slots = [];
             int number = 1;
@@ -264,7 +274,24 @@ internal sealed class HidppBridge : IDisposable
                 catch (HidppErrorException) { }
                 slots.Add(new OnboardSlot(number++, sector, enabled, profile));
             }
-            return new OnboardMemory(slots, directory, sectorSize, buttonCount);
+            Dictionary<int, byte[]> spare = [];
+            for (int sector = 1; sector < sectorCount; sector++)
+            {
+                if (slots.Any(s => s.Sector == sector)) continue;
+                try
+                {
+                    byte[] head = session.CallLong(modeIndex, 5, 0, (byte)sector, 0, 0);
+                    if (head.Take(16).All(b => b == 0xFF))
+                    {
+                        byte[] erased = new byte[sectorSize];
+                        Array.Fill(erased, (byte)0xFF);
+                        spare[sector] = erased;
+                    }
+                    else spare[sector] = ReadSector(session, modeIndex, sector, sectorSize);
+                }
+                catch (HidppErrorException) { }
+            }
+            return new OnboardMemory(slots, directory, sectorSize, buttonCount, spare);
         }
         catch (HidppErrorException) { return null; }
     }
@@ -312,6 +339,46 @@ internal sealed class HidppBridge : IDisposable
         session.Call(modeIndex, 1, 1, 0, 0);
         session.Call(modeIndex, 3, (byte)(sector >> 8), (byte)sector, 0);
         if (session.Call(modeIndex, 2, 0, 0, 0)[0] != 1) throw new IOException("The mouse didn't switch to onboard mode");
+    }
+
+    /// <summary>
+    /// Hex dump of the 0x8100 description and every user (0x00xx) and factory (0x01xx) sector. A sector whose
+    /// first 16 bytes are erased (all 0xFF) is taken as unused and skipped, so the dump stays quick. Read-only.
+    /// </summary>
+    private static string DumpMemory(Session session, byte modeIndex)
+    {
+        byte[] description = session.Call(modeIndex, 0, 0, 0, 0);
+        int factoryCount = description[4], sectorCount = description[6], sectorSize = (description[7] << 8) | description[8];
+        StringBuilder text = new();
+        text.AppendLine($"BetterGhub on-board memory dump, {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        text.AppendLine($"Description: {Convert.ToHexString(description)}");
+        text.AppendLine($"  memory model {description[0]}, profile format {description[1]}, macro format {description[2]}, profiles {description[3]}, "
+            + $"factory profiles {factoryCount}, buttons {description[5]}, sectors {sectorCount}, sector size {sectorSize}");
+        text.AppendLine();
+        IEnumerable<int> sectors = Enumerable.Range(0, sectorCount).Concat(Enumerable.Range(0x100, Math.Max(factoryCount, 1)));
+        List<string> skipped = [];
+        foreach (int sector in sectors)
+        {
+            byte[] data;
+            try
+            {
+                byte[] head = session.CallLong(modeIndex, 5, (byte)(sector >> 8), (byte)sector, 0, 0);
+                if (head.Take(16).All(b => b == 0xFF)) { skipped.Add($"0x{sector:X4}"); continue; }
+                data = ReadSector(session, modeIndex, sector, sectorSize);
+            }
+            catch (HidppErrorException error) { text.AppendLine($"Sector 0x{sector:X4}: read refused ({error.Message})"); text.AppendLine(); continue; }
+            text.AppendLine($"Sector 0x{sector:X4}");
+            for (int offset = 0; offset < data.Length; offset += 16)
+            {
+                int length = Math.Min(16, data.Length - offset);
+                string hex = string.Join(' ', data.Skip(offset).Take(length).Select(b => b.ToString("X2")));
+                string ascii = new(data.Skip(offset).Take(length).Select(b => b is >= 0x20 and < 0x7F ? (char)b : '.').ToArray());
+                text.AppendLine($"  {offset:X4}  {hex,-47}  {ascii}");
+            }
+            text.AppendLine();
+        }
+        if (skipped.Count > 0) text.AppendLine("Erased (skipped): " + string.Join(", ", skipped));
+        return text.ToString();
     }
 
     /// <summary>memoryRead returns 16 bytes per call; the last read is pulled back so it stays inside the sector.</summary>

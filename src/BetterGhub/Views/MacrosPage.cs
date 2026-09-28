@@ -218,13 +218,16 @@ internal sealed class MacrosPage : UserControl, IPage
     private List<string> UsesOf(MacroDefinition item)
     {
         List<string> uses = [];
-        foreach (MouseProfile profile in service.Settings.Profiles)
+        void Add(MouseProfile profile, bool named)
         {
             foreach ((int bit, string id) in profile.Assignments.Where(x => x.Value == item.Id))
-                uses.Add(ControlName(bit) + (service.Settings.Profiles.Count > 1 ? $" · {profile.Name}" : ""));
+                uses.Add(ControlName(bit) + (named ? $" · {profile.Name}" : ""));
             foreach ((int bit, string id) in profile.ShiftAssignments.Where(x => x.Value == item.Id))
-                uses.Add("G-Shift+" + ControlName(bit) + (service.Settings.Profiles.Count > 1 ? $" · {profile.Name}" : ""));
+                uses.Add("G-Shift+" + ControlName(bit) + (named ? $" · {profile.Name}" : ""));
         }
+        foreach (MouseProfile profile in service.Settings.Profiles) Add(profile, service.Settings.Profiles.Count > 1);
+        // The running on-board slot isn't one of the saved profiles; its buttons are read from the mouse.
+        if (service.IsOnboard) Add(service.ActiveProfile, named: true);
         return uses;
     }
 
