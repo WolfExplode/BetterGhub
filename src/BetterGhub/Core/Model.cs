@@ -62,6 +62,11 @@ public sealed class Settings
     public bool SuppressStandardActions { get; set; }
     public bool AutoConnect { get; set; } = true;
     public bool AutoSwitchProfiles { get; set; } = true;
+    /// <summary>Closing the window keeps BetterGhub running in the notification area.</summary>
+    public bool CloseToTray { get; set; } = true;
+    public bool TrayHintShown { get; set; }
+    /// <summary>Set when the user chose "Just run it" instead of installing.</summary>
+    public bool SkipInstallPrompt { get; set; }
 
     [JsonIgnore] public string? LoadError { get; private set; }
 

@@ -11,6 +11,7 @@ internal sealed class DevicePage : UserControl, IPage
 {
     private readonly MouseService service;
     private readonly StackPanel connection = new();
+    private readonly StackPanel appCard = new();
     private readonly WrapPanel lamps = new();
     private readonly ListBox log = new();
     private readonly Dictionary<string, Border> lampsById = [];
@@ -24,6 +25,7 @@ internal sealed class DevicePage : UserControl, IPage
 
         StackPanel left = new();
         left.Children.Add(Ui.Card(connection, new Thickness(22)));
+        left.Children.Add(Ui.Card(appCard, new Thickness(22)).With(new Thickness(0, 16, 0, 0)));
         left.Children.Add(Ui.Card(About(), new Thickness(22)).With(new Thickness(0, 16, 0, 0)));
         layout.Children.Add(Ui.Scroll(left));
 
@@ -83,6 +85,7 @@ internal sealed class DevicePage : UserControl, IPage
     public void Refresh()
     {
         RenderConnection();
+        RenderApp();
         lamps.Children.Clear();
         lampsById.Clear();
         foreach (MouseControl control in MouseControls.All.OrderBy(c => c.Id.Length > 2 ? 1 : 0).ThenBy(c => c.Id))
@@ -159,6 +162,64 @@ internal sealed class DevicePage : UserControl, IPage
         auto.Click += (_, _) => { service.Settings.AutoConnect = auto.IsChecked == true; service.Save(); };
         connection.Children.Add(auto);
         connection.Children.Add(Ui.Text("Connecting switches the mouse to host mode in its working memory only. Quit BetterGhub and power-cycle the mouse to return to its onboard profile.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 14, 0, 0)));
+    }
+
+    private void RenderApp()
+    {
+        appCard.Children.Clear();
+        appCard.Children.Add(Ui.Text("App", "H2").With(new Thickness(0, 0, 0, 14)));
+
+        CheckBox startup = new()
+        {
+            Style = Ui.Style("Switch"), IsChecked = Installer.StartsWithWindows(),
+            Content = Ui.Text("Start with Windows, in the tray", color: "Text")
+        };
+        startup.Click += (_, _) =>
+        {
+            try { Installer.SetStartWithWindows(startup.IsChecked == true, Installer.IsInstalled ? Installer.InstalledExe : Installer.CurrentExe); }
+            catch (Exception error) { service.Write("Could not change startup: " + error.Message); startup.IsChecked = Installer.StartsWithWindows(); }
+        };
+        appCard.Children.Add(startup);
+
+        CheckBox tray = new()
+        {
+            Style = Ui.Style("Switch"), IsChecked = service.Settings.CloseToTray, Margin = new Thickness(0, 12, 0, 0),
+            Content = new StackPanel
+            {
+                Children =
+                {
+                    Ui.Text("Keep running when the window is closed", color: "Text"),
+                    Ui.Text("Macros only work while BetterGhub runs. Quit from the tray icon.", "Body", size: 12).With(new Thickness(0, 3, 0, 0))
+                }
+            }
+        };
+        tray.Click += (_, _) => { service.Settings.CloseToTray = tray.IsChecked == true; service.Save(); };
+        appCard.Children.Add(tray);
+
+        string where = Installer.IsDeveloperBuild ? "Developer build"
+            : Installer.IsRunningInstalled ? "Installed for this Windows account"
+            : "Running without installing";
+        appCard.Children.Add(Ui.Text($"Version {Installer.Version} · {where}", "Body", size: 12).With(new Thickness(0, 18, 0, 10)));
+        if (!Installer.IsDeveloperBuild)
+        {
+            Button action = Installer.IsRunningInstalled
+                ? Ui.Button("Uninstall…", () => Process.Start(new ProcessStartInfo(Installer.InstalledExe, "--uninstall") { UseShellExecute = false }), "DangerBtn", "")
+                : Ui.Button(Installer.IsInstalled ? "Open installed version" : "Install…", InstallFromPortable, "Btn", "");
+            action.HorizontalAlignment = HorizontalAlignment.Left;
+            appCard.Children.Add(action);
+        }
+    }
+
+    private void InstallFromPortable()
+    {
+        try
+        {
+            if (!Installer.IsInstalled) Installer.Install(desktopShortcut: false, startWithWindows: Installer.StartsWithWindows());
+            // Hand over to the installed copy: this one quits first so the single-instance check lets it start.
+            App.Current.Quit();
+            Process.Start(new ProcessStartInfo(Installer.InstalledExe) { UseShellExecute = true });
+        }
+        catch (Exception error) { service.Write("Install failed: " + error.Message); }
     }
 
     private FrameworkElement About()

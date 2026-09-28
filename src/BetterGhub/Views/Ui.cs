@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Runtime.InteropServices;
+using System.Windows.Interop;
 using System.Windows.Media;
 
 namespace BetterGhub.Views;
@@ -99,6 +101,15 @@ internal static class Ui
         grid.Children.Add(hint);
         return grid;
     }
+
+    /// <summary>Asks Windows 10 20H1+ / 11 for a dark title bar on a standard-chrome window.</summary>
+    public static void DarkTitleBar(Window window) => window.SourceInitialized += (_, _) =>
+    {
+        int enabled = 1;
+        _ = DwmSetWindowAttribute(new WindowInteropHelper(window).Handle, 20, ref enabled, sizeof(int));
+    };
+
+    [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
 
     public static ScrollViewer Scroll(UIElement content) =>
         new() { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };

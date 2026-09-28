@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using BetterGhub.Core;
 using BetterGhub.Device;
 using BetterGhub.Input;
@@ -19,7 +18,7 @@ public sealed record LogEntry(DateTime Time, string Text, bool IsButton = false)
 internal sealed class MouseService : IDisposable
 {
     private readonly SynchronizationContext ui;
-    private readonly DeviceBridge bridge = new();
+    private readonly HidppBridge bridge = new();
     private readonly MacroEngine engine = new();
     private readonly Dictionary<int, string> pressedAssignments = [];
     private readonly HashSet<int> pressed = [];
@@ -53,8 +52,7 @@ internal sealed class MouseService : IDisposable
         this.ui = ui;
         Settings = Settings.Load();
         if (Settings.LoadError is { } loadError) Write(loadError);
-        bridge.Message += message => Post(() => HandleMessage(message));
-        bridge.Error += text => Post(() => Write(text));
+        bridge.Event += item => Post(() => HandleEvent(item));
         bridge.Exited += () => Post(() =>
         {
             if (State is ConnectionState.Connected or ConnectionState.Connecting) SetDisconnected("Device bridge stopped");
@@ -99,7 +97,6 @@ internal sealed class MouseService : IDisposable
             bridge.Start();
             State = ConnectionState.Connecting;
             StateDetail = "Looking for the LIGHTSPEED receiver…";
-            Write("Starting device bridge");
         }
         catch (Exception error)
         {
@@ -133,48 +130,39 @@ internal sealed class MouseService : IDisposable
         engine.StopAll();
     }
 
-    private void HandleMessage(JsonElement message)
+    private void HandleEvent(DeviceEvent item)
     {
-        switch (message.GetProperty("type").GetString())
+        switch (item)
         {
-            case "connected":
+            case ConnectedEvent connected:
                 State = ConnectionState.Connected;
-                DeviceDpi = GetInt(message, "dpi");
-                DeviceIntervalMs = GetInt(message, "report_interval_ms");
+                DeviceDpi = connected.Dpi;
+                DeviceIntervalMs = connected.ReportIntervalMs;
                 StateDetail = "";
                 Write($"Connected · {DeviceDpi} DPI · {DeviceReportRate} Hz");
                 ApplyDeviceSettings();
                 StateChanged?.Invoke();
                 break;
-            case "disconnected":
-                string reason = message.TryGetProperty("message", out JsonElement text) ? text.GetString() ?? "" : "";
-                if (State != ConnectionState.Connecting || StateDetail != FriendlyReason(reason)) Write("Waiting for mouse: " + reason);
-                SetDisconnected(FriendlyReason(reason));
+            case DisconnectedEvent disconnected:
+                if (State != ConnectionState.Connecting || StateDetail != disconnected.Reason) Write("Waiting for mouse: " + disconnected.Reason);
+                SetDisconnected(disconnected.Reason);
                 break;
-            case "button":
-                OnSpyButton(message.GetProperty("bit").GetInt32(), message.GetProperty("down").GetBoolean());
+            case ButtonEvent button:
+                OnSpyButton(button.Bit, button.Down);
                 break;
-            case "dpi":
-                DeviceDpi = GetInt(message, "value");
+            case DpiEvent dpi:
+                DeviceDpi = dpi.Dpi;
                 StateChanged?.Invoke();
                 break;
-            case "report_interval":
-                DeviceIntervalMs = GetInt(message, "value");
+            case ReportIntervalEvent rate:
+                DeviceIntervalMs = rate.ReportIntervalMs;
                 StateChanged?.Invoke();
                 break;
-            case "error":
-                Write("Device error: " + message.GetProperty("message").GetString());
+            case DeviceErrorEvent error:
+                Write("Device error: " + error.Message);
                 break;
         }
     }
-
-    private static string FriendlyReason(string reason) =>
-        reason.Contains("Expected one vendor HID usage", StringComparison.Ordinal) ? "Receiver not found. Is it plugged in?"
-        : reason.Contains("No reply", StringComparison.Ordinal) ? "Mouse is asleep or switched off"
-        : reason;
-
-    private static int GetInt(JsonElement item, string property) =>
-        item.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : 0;
 
     // ── Input ─────────────────────────────────────────────────────────────────
 
@@ -339,14 +327,14 @@ internal sealed class MouseService : IDisposable
     public void SendDpi(int dpi)
     {
         if (State != ConnectionState.Connected) return;
-        try { bridge.Send("set_dpi", dpi); }
+        try { bridge.SetDpi(dpi); }
         catch (Exception error) { Write(error.Message); }
     }
 
     public void SendReportRate(int hz)
     {
         if (State != ConnectionState.Connected) return;
-        try { bridge.Send("set_report_interval", 1000 / hz); }
+        try { bridge.SetReportInterval(1000 / hz); }
         catch (Exception error) { Write(error.Message); }
     }
 

@@ -37,7 +37,6 @@ public partial class MainWindow : Window
         SizeChanged += (_, _) => UpdateCompact();
         SourceInitialized += (_, _) => AttachInput();
         Loaded += (_, _) => { if (service.Settings.LoadError is { } error) ShowToast(error); };
-        Loaded += (_, _) => AutoConnect();
         profileTimer.Tick += (_, _) =>
         {
             service.AutoSelectProfile(handle);
@@ -58,6 +57,7 @@ public partial class MainWindow : Window
         catch (Exception error) { service.Write("Wheel capture unavailable: " + error.Message); }
         service.InstallHook();
         profileTimer.Start();
+        AutoConnect(); // Here rather than Loaded so it also runs when started hidden in the tray.
     }
 
     private void AutoConnect()
@@ -211,7 +211,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void CompactStatusClick(object sender, RoutedEventArgs e) => Navigate("Device");
+    private void CompactStatusClick(object sender, RoutedEventArgs e) => Navigate("Settings");
 
     private void UpdateMaximized()
     {
@@ -220,9 +220,35 @@ public partial class MainWindow : Window
         MaxButton.Content = WindowState == WindowState.Maximized ? "" : "";
     }
 
+    /// <summary>Creates the window handle without showing it (for --minimized) so input capture still starts.</summary>
+    internal void PrepareHidden() => new WindowInteropHelper(this).EnsureHandle();
+
+    internal void ShowFromTray()
+    {
+        Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+        Topmost = true; // Reliably bring to front when activated from another process or the tray.
+        Topmost = false;
+        Focus();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (!App.Current.Quitting && service.Settings.CloseToTray)
+        {
+            e.Cancel = true;
+            Hide();
+            App.Current.OnWindowClosedToTray();
+            return;
+        }
+        base.OnClosing(e);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         profileTimer.Stop();
+        App.Current.Quit();
         base.OnClosed(e);
     }
 }

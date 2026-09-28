@@ -10,10 +10,16 @@
     <AssemblyName>BetterGhub</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>0.2.0</Version>
+    <ApplicationIcon>Assets\BetterGhub.ico</ApplicationIcon>
+    <Version>0.3.0</Version>
+    <Product>BetterGhub</Product>
+    <Company>BetterGhub</Company>
+    <Description>Macros, DPI and button assignments for the Logitech G502 X LIGHTSPEED</Description>
+    <Copyright>BetterGhub</Copyright>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="..\..\images\g502-x-lightspeed-mouse-top-angle-transparent.png" Link="Assets\mouse-top.png" />
     <Resource Include="..\..\images\g502-x-lightspeed-mouse-profile-angle.png" Link="Assets\mouse-side.png" />
+    <Resource Include="Assets\icon-256.png" />
   </ItemGroup>
 </Project>

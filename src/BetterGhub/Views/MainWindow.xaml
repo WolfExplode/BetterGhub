@@ -1,7 +1,7 @@
 <Window x:Class="BetterGhub.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="BetterGhub" Width="1320" Height="840" MinWidth="1040" MinHeight="680"
+        Title="BetterGhub" Icon="/Assets/icon-256.png" Width="1320" Height="840" MinWidth="1040" MinHeight="680"
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource BodyFont}" FontSize="13"
         WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
@@ -20,16 +20,7 @@
         <Border Background="{StaticResource Rail}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
             <DockPanel x:Name="RailPanel" Margin="16,0,16,16">
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Height="64" VerticalAlignment="Center">
-                    <Border Width="30" Height="30" CornerRadius="8" VerticalAlignment="Center">
-                        <Border.Background>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                <GradientStop Color="#2EC5EA" Offset="0"/>
-                                <GradientStop Color="#1A7FD6" Offset="1"/>
-                            </LinearGradientBrush>
-                        </Border.Background>
-                        <TextBlock Text="B" FontFamily="{StaticResource DisplayFont}" FontWeight="Bold" FontSize="17"
-                                   Foreground="{StaticResource OnAccent}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
+                    <Image Source="/Assets/icon-256.png" Width="32" Height="32" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
                     <TextBlock x:Name="Wordmark" Text="BetterGhub" FontFamily="{StaticResource DisplayFont}" FontWeight="SemiBold" FontSize="18"
                                VerticalAlignment="Center" Margin="11,0,0,1"/>
                 </StackPanel>
@@ -55,7 +46,7 @@
                     <RadioButton Style="{StaticResource NavItem}" Tag="&#xE945;" Content="Macros" AutomationProperties.Name="Macros" x:Name="NavMacros" Checked="NavChecked"/>
                     <RadioButton Style="{StaticResource NavItem}" Tag="&#xEC4A;" Content="Sensitivity" AutomationProperties.Name="Sensitivity" x:Name="NavSensitivity" Checked="NavChecked"/>
                     <RadioButton Style="{StaticResource NavItem}" Tag="&#xE71D;" Content="Profiles" AutomationProperties.Name="Profiles" x:Name="NavProfiles" Checked="NavChecked"/>
-                    <RadioButton Style="{StaticResource NavItem}" Tag="&#xE9D9;" Content="Device" AutomationProperties.Name="Device" x:Name="NavDevice" Checked="NavChecked"/>
+                    <RadioButton Style="{StaticResource NavItem}" Tag="&#xE713;" Content="Settings" AutomationProperties.Name="Settings" x:Name="NavSettings" Checked="NavChecked"/>
                 </StackPanel>
             </DockPanel>
         </Border>

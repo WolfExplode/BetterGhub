@@ -34,7 +34,7 @@ internal static class Snapshot
 
     private static async Task RenderAll(MainWindow window, string folder, string suffix)
     {
-        foreach (string page in new[] { "Assignments", "Macros", "Sensitivity", "Profiles", "Device" })
+        foreach (string page in new[] { "Assignments", "Macros", "Sensitivity", "Profiles", "Settings" })
         {
             window.Navigate(page);
             await Settle();
@@ -51,6 +51,12 @@ internal static class Snapshot
         window.FindPage<AssignmentsPage>()?.SelectControl("G4");
         await Settle();
         Save(window, Path.Combine(folder, $"assignments-side{suffix}.png"));
+
+        InstallWindow install = new() { WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = 0, ShowActivated = false, ShowInTaskbar = false };
+        install.Show();
+        await Settle();
+        Save(install, Path.Combine(folder, $"install{suffix}.png"));
+        install.Close();
         Application.Current.Shutdown();
     }
 
