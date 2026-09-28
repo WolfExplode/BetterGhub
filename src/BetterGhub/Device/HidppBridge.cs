@@ -9,21 +9,26 @@ namespace BetterGhub.Device;
 /// <summary>
 /// Native HID++ 2.0 bridge for the G502 X LIGHTSPEED on a 046d:c547 receiver (device slot 1).
 /// Enables volatile host mode (0x8100) and button spying (0x8110), streams button bits, and applies
-/// DPI (0x2201) and report rate (0x8060), and reads the battery (0x1004 or 0x1000) and on-board profiles. Never writes flash. Mirrors bridge/hidpp_bridge.py.
+/// DPI (0x2201) and report rate (0x8060), and reads the battery (0x1004 or 0x1000) and on-board profiles.
+/// Flash is written only by <see cref="WriteOnboard"/>, which the user confirms, and only to user profile sectors. Mirrors bridge/hidpp_bridge.py.
 /// </summary>
 internal sealed class HidppBridge : IDisposable
 {
     private const ushort VendorId = 0x046D, ProductId = 0xC547;
     private const byte Slot = 1, ReceiverIndex = 0xFF, SoftwareId = 0x0D;
 
-    private readonly ConcurrentQueue<(string Command, int Value)> commands = new();
+    private readonly ConcurrentQueue<(string Command, int Value, object? Data)> commands = new();
     private Thread? worker;
     private CancellationTokenSource? stop;
     private volatile Session? current;
+    private volatile int onboardSector;
 
     public event Action<DeviceEvent>? Event;
     public event Action? Exited;
     public bool Running => worker is { IsAlive: true };
+
+    /// <summary>On-board slot to run the mouse from when the bridge connects; 0 for host mode.</summary>
+    public int OnboardSector { get => onboardSector; set => onboardSector = value; }
 
     public void Start()
     {
@@ -49,10 +54,14 @@ internal sealed class HidppBridge : IDisposable
     public void SetDpi(int dpi) => Send("dpi", dpi);
     public void SetReportInterval(int milliseconds) => Send("rate", milliseconds);
     public void ReadOnboardMemory() => Send("onboard", 0);
+    /// <summary>Writes whole sectors; each is skipped unless the mouse still holds <c>Expected</c>.</summary>
+    public void WriteOnboard(IReadOnlyList<SectorWrite> sectors) => Send("write", 0, sectors);
+    /// <summary>Runs the mouse from the on-board slot in <paramref name="sector"/>, or host mode for 0. The bridge stays connected.</summary>
+    public void SetMode(int sector) => Send("mode", sector);
 
-    private void Send(string command, int value)
+    private void Send(string command, int value, object? data = null)
     {
-        commands.Enqueue((command, value));
+        commands.Enqueue((command, value, data));
         current?.Wake(); // Don't wait out the report poll; DPI Shift should apply immediately.
     }
     public void Dispose() => Stop();
@@ -97,8 +106,7 @@ internal sealed class HidppBridge : IDisposable
         byte rateIndex = session.Call(0, 0, 0x80, 0x60, 0)[0];
         if (modeIndex == 0 || spyIndex == 0) throw new IOException("This mouse does not support host mode or button reporting");
 
-        EnsureHostMode(session, modeIndex);
-        session.Call(spyIndex, 1, 0, 0, 0); // startSpy
+        ApplyMode(session, modeIndex, spyIndex);
         int dpi = 0, interval = 0;
         if (dpiIndex != 0)
         {
@@ -106,9 +114,11 @@ internal sealed class HidppBridge : IDisposable
             dpi = (payload[1] << 8) | payload[2];
         }
         if (rateIndex != 0) interval = session.Call(rateIndex, 1, 0, 0, 0)[0];
+        // Mode and slots first, so the service knows what the pages should edit before it reports connected.
+        Emit(new ModeEvent(onboardSector));
+        if (ReadOnboard(session, modeIndex) is { } onboard) Emit(new OnboardMemoryEvent(onboard));
         Emit(new ConnectedEvent(dpi, interval));
         Emit(new FirmwareEvent(MouseFirmware(session), ReceiverFirmware(session)));
-        if (ReadOnboard(session, modeIndex) is { } onboard) Emit(onboard);
         Battery battery = Battery.Find(session);
         if (battery.Read(session) is { } charge) Emit(charge);
         Stopwatch sinceBattery = Stopwatch.StartNew();
@@ -117,7 +127,7 @@ internal sealed class HidppBridge : IDisposable
         Stopwatch sinceReport = Stopwatch.StartNew();
         while (!token.IsCancellationRequested)
         {
-            while (commands.TryDequeue(out (string Command, int Value) command))
+            while (commands.TryDequeue(out (string Command, int Value, object? Data) command))
             {
                 // Only the latest DPI matters when several are queued (e.g. a quick shift press and release).
                 if (command.Command == "dpi" && commands.Any(x => x.Command == "dpi")) continue;
@@ -125,8 +135,27 @@ internal sealed class HidppBridge : IDisposable
                 {
                     if (command.Command == "onboard")
                     {
-                        if (ReadOnboard(session, modeIndex) is { } memory) Emit(memory);
+                        if (ReadOnboard(session, modeIndex) is { } memory) Emit(new OnboardMemoryEvent(memory));
                         else Emit(new DeviceErrorEvent("Could not read on-board memory"));
+                    }
+                    else if (command.Command == "write")
+                    {
+                        IReadOnlyList<SectorWrite> writes = (IReadOnlyList<SectorWrite>)command.Data!;
+                        try
+                        {
+                            OnboardWriteEvent result = WriteSectors(session, modeIndex, writes);
+                            // Re-select the running slot so the mouse picks up what was just written to it.
+                            if (result.Success && onboardSector != 0 && writes.Any(w => w.Sector == onboardSector)) SetOnboardMode(session, modeIndex, onboardSector);
+                            Emit(result);
+                        }
+                        catch (HidppErrorException error) { Emit(new OnboardWriteEvent(false, "The mouse refused the write: " + error.Message)); }
+                        if (ReadOnboard(session, modeIndex) is { } memory) Emit(new OnboardMemoryEvent(memory));
+                    }
+                    else if (command.Command == "mode")
+                    {
+                        onboardSector = command.Value;
+                        ApplyMode(session, modeIndex, spyIndex);
+                        Emit(new ModeEvent(onboardSector));
                     }
                     else if (command.Command == "dpi")
                     {
@@ -168,8 +197,8 @@ internal sealed class HidppBridge : IDisposable
             if (sinceReport.Elapsed > TimeSpan.FromSeconds(5))
             {
                 // The receiver stays open while the mouse sleeps; re-arm so wake-ups and power cycles recover.
-                EnsureHostMode(session, modeIndex);
-                session.Call(spyIndex, 1, 0, 0, 0);
+                if (onboardSector == 0) ApplyMode(session, modeIndex, spyIndex);
+                else if (session.Call(modeIndex, 2, 0, 0, 0)[0] != 1) ApplyMode(session, modeIndex, spyIndex);
                 sinceReport.Restart();
             }
         }
@@ -210,7 +239,7 @@ internal sealed class HidppBridge : IDisposable
     /// Reads the slot directory (sector 0) and every slot's profile sector with 0x8100 memoryRead.
     /// Read-only; null when the mouse refuses.
     /// </summary>
-    private static OnboardMemoryEvent? ReadOnboard(Session session, byte modeIndex)
+    private static OnboardMemory? ReadOnboard(Session session, byte modeIndex)
     {
         try
         {
@@ -221,16 +250,62 @@ internal sealed class HidppBridge : IDisposable
             if (description[1] != 3 || sectorSize < 64) return null; // Unknown profile format.
             List<OnboardSlot> slots = [];
             int number = 1;
-            foreach ((int sector, bool enabled) in OnboardProfiles.ParseDirectory(ReadSector(session, modeIndex, 0, sectorSize), profileCount))
+            byte[] directory = ReadSector(session, modeIndex, 0, sectorSize);
+            foreach ((int sector, bool enabled) in OnboardProfiles.ParseDirectory(directory, profileCount))
             {
                 OnboardProfile? profile = null;
                 try { profile = OnboardProfiles.Parse(ReadSector(session, modeIndex, sector, sectorSize), buttonCount); }
                 catch (HidppErrorException) { }
                 slots.Add(new OnboardSlot(number++, sector, enabled, profile));
             }
-            return new OnboardMemoryEvent(slots);
+            return new OnboardMemory(slots, directory, sectorSize, buttonCount);
         }
         catch (HidppErrorException) { return null; }
+    }
+
+    /// <summary>
+    /// Writes each sector with memoryAddrWrite (sector, offset 0, length), 16-byte memoryWrite calls and
+    /// memoryWriteEnd, then reads it back. Refuses anything but the directory and user profile sectors,
+    /// and any sector that changed since the app read it (e.g. G HUB saved in the meantime).
+    /// </summary>
+    private static OnboardWriteEvent WriteSectors(Session session, byte modeIndex, IReadOnlyList<SectorWrite> sectors)
+    {
+        byte[] description = session.Call(modeIndex, 0, 0, 0, 0);
+        int sectorSize = (description[7] << 8) | description[8];
+        foreach (SectorWrite write in sectors)
+        {
+            if (write.Sector != 0 && !OnboardProfiles.IsUserSector(write.Sector)) return new OnboardWriteEvent(false, $"Refused to write sector {write.Sector}");
+            if (write.Data.Length != sectorSize || write.Expected.Length != sectorSize) return new OnboardWriteEvent(false, "Sector size doesn't match the mouse");
+        }
+        foreach (SectorWrite write in sectors)
+            if (!ReadSector(session, modeIndex, write.Sector, sectorSize).AsSpan().SequenceEqual(write.Expected))
+                return new OnboardWriteEvent(false, "The mouse's memory changed since BetterGhub read it. Nothing was written; check the slots and try again.");
+        int written = 0;
+        foreach (SectorWrite write in sectors)
+        {
+            if (write.Data.AsSpan().SequenceEqual(write.Expected)) continue; // Unchanged; spare the flash.
+            session.CallLong(modeIndex, 6, (byte)(write.Sector >> 8), (byte)write.Sector, 0, 0, (byte)(sectorSize >> 8), (byte)sectorSize);
+            for (int offset = 0; offset < sectorSize; offset += 16)
+            {
+                byte[] chunk = new byte[16];
+                Array.Copy(write.Data, offset, chunk, 0, Math.Min(16, sectorSize - offset));
+                session.CallLong(modeIndex, 7, chunk);
+            }
+            session.CallLong(modeIndex, 8);
+            if (!ReadSector(session, modeIndex, write.Sector, sectorSize).AsSpan().SequenceEqual(write.Data))
+                return new OnboardWriteEvent(false, $"Sector {write.Sector} didn't read back as written. Restore the backup from the On-board memory card.");
+            written++;
+        }
+        return new OnboardWriteEvent(true, written == 0 ? "Nothing changed" : $"Wrote {written} sector{(written == 1 ? "" : "s")} to the mouse");
+    }
+
+    /// <summary>Selects the slot (setCurrentProfile takes its sector) and switches to onboard mode (1).</summary>
+    private static void SetOnboardMode(Session session, byte modeIndex, int sector)
+    {
+        if (!OnboardProfiles.IsUserSector(sector)) throw new ArgumentException("Not an on-board slot");
+        session.Call(modeIndex, 1, 1, 0, 0);
+        session.Call(modeIndex, 3, (byte)(sector >> 8), (byte)sector, 0);
+        if (session.Call(modeIndex, 2, 0, 0, 0)[0] != 1) throw new IOException("The mouse didn't switch to onboard mode");
     }
 
     /// <summary>memoryRead returns 16 bytes per call; the last read is pulled back so it stays inside the sector.</summary>
@@ -274,6 +349,29 @@ internal sealed class HidppBridge : IDisposable
             return $"{version[1]:X}.{version[2]:X}.{(build[1] << 8) | build[2]:X}";
         }
         catch (HidppErrorException) { return null; }
+    }
+
+    /// <summary>
+    /// Host mode with button spying, or the chosen on-board slot. A slot the mouse refuses (deleted, or
+    /// the directory changed) falls back to host mode so the mouse is never left unhandled.
+    /// </summary>
+    private void ApplyMode(Session session, byte modeIndex, byte spyIndex)
+    {
+        if (onboardSector != 0)
+        {
+            try
+            {
+                SetOnboardMode(session, modeIndex, onboardSector);
+                return;
+            }
+            catch (Exception error) when (error is HidppErrorException or ArgumentException)
+            {
+                Emit(new DeviceErrorEvent($"Could not run on-board slot {onboardSector}: {error.Message}. Using BetterGhub instead."));
+                onboardSector = 0;
+            }
+        }
+        EnsureHostMode(session, modeIndex);
+        session.Call(spyIndex, 1, 0, 0, 0); // startSpy
     }
 
     private static void EnsureHostMode(Session session, byte modeIndex)

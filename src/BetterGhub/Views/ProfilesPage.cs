@@ -14,13 +14,13 @@ internal sealed class ProfilesPage : UserControl, IPage
     private readonly WrapPanel tiles = new();
     private readonly ContentControl details = new() { Focusable = false };
     private readonly CheckBox autoSwitch = new();
-    private readonly ContentControl onboard = new() { Focusable = false };
+    private readonly OnboardCard onboard;
     private MouseProfile? selected;
-    private int selectedSlot = 1;
 
     public ProfilesPage(MouseService service)
     {
         this.service = service;
+        onboard = new OnboardCard(service);
         StackPanel page = new() { Margin = new Thickness(36, 8, 36, 28) };
 
         DockPanel head = new() { Margin = new Thickness(0, 0, 0, 16) };
@@ -42,7 +42,6 @@ internal sealed class ProfilesPage : UserControl, IPage
         page.Children.Add(details.With(new Thickness(0, 12, 0, 0)));
         page.Children.Add(onboard.With(new Thickness(0, 16, 0, 0)));
         Content = Ui.Scroll(page);
-        service.StateChanged += () => { if (IsLoaded) RenderOnboard(); };
         Refresh();
     }
 
@@ -54,156 +53,15 @@ internal sealed class ProfilesPage : UserControl, IPage
         foreach (MouseProfile profile in service.Settings.Profiles) tiles.Children.Add(Tile(profile));
         tiles.Children.Add(AddTile());
         RenderDetails();
-        RenderOnboard();
+        onboard.Render(force: true);
     }
-
-    // ── On-board memory (read-only) ───────────────────────────────────────────
 
     /// <summary>For --snapshot: scrolls the on-board memory card into view.</summary>
-    internal void ShowOnboard() => ((ScrollViewer)Content).ScrollToEnd();
-
-    private void RenderOnboard()
+    internal void ShowOnboard(bool editing = false)
     {
-        StackPanel body = new();
-        DockPanel head = new();
-        if (service.State == ConnectionState.Connected)
-        {
-            Button read = Ui.Button("Read again", service.ReadOnboardMemory, "GhostBtn", "");
-            DockPanel.SetDock(read, Dock.Right);
-            head.Children.Add(read);
-        }
-        head.Children.Add(Ui.Text("On-board memory", "H2"));
-        body.Children.Add(head);
-        body.Children.Add(Ui.Text("Profiles saved on the mouse itself. The mouse uses them in onboard mode: when BetterGhub isn't running, or on another computer. "
-            + "While BetterGhub is connected the mouse is in host mode and ignores them. Read-only for now.", "Body", size: 12, wrap: true).With(new Thickness(0, 6, 0, 18)));
-
-        IReadOnlyList<OnboardSlot>? slots = service.OnboardSlots;
-        if (slots is null || slots.Count == 0)
-        {
-            body.Children.Add(Ui.Text(service.State == ConnectionState.Connected ? "Reading the mouse's memory…" : "Connect the mouse to read its memory.", "Body"));
-            onboard.Content = Ui.Card(body, new Thickness(24, 20, 24, 20));
-            return;
-        }
-        if (slots.All(s => s.Number != selectedSlot)) selectedSlot = slots[0].Number;
-
-        Grid layout = new();
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(240) });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        StackPanel list = new() { Margin = new Thickness(0, 0, 28, 0) };
-        foreach (OnboardSlot slot in slots) list.Children.Add(SlotRow(slot));
-        layout.Children.Add(list);
-        FrameworkElement detail = SlotDetail(slots.First(s => s.Number == selectedSlot));
-        Grid.SetColumn(detail, 1);
-        layout.Children.Add(detail);
-        body.Children.Add(layout);
-        onboard.Content = Ui.Card(body, new Thickness(24, 20, 24, 20));
-    }
-
-    private RadioButton SlotRow(OnboardSlot slot)
-    {
-        DockPanel content = new();
-        Border state = Ui.Badge(slot.Enabled ? "ON" : "OFF", slot.Enabled ? "Success" : "Faint", "Surface2");
-        DockPanel.SetDock(state, Dock.Right);
-        content.Children.Add(state);
-        TextBlock number = Ui.Text($"SLOT {slot.Number}", "Overline");
-        number.Width = 52;
-        number.Margin = new Thickness(0);
-        number.VerticalAlignment = VerticalAlignment.Center;
-        content.Children.Add(number);
-        TextBlock name = Ui.Text(slot.DisplayName, size: 13.5, bold: slot.Enabled, color: slot.Enabled ? "Text" : "Muted");
-        name.TextTrimming = TextTrimming.CharacterEllipsis;
-        name.VerticalAlignment = VerticalAlignment.Center;
-        content.Children.Add(name);
-        RadioButton row = new() { Style = Ui.Style("Row"), Content = content, GroupName = "OnboardSlots", IsChecked = slot.Number == selectedSlot };
-        row.Click += (_, _) => { selectedSlot = slot.Number; RenderOnboard(); };
-        return row;
-    }
-
-    private static FrameworkElement SlotDetail(OnboardSlot slot)
-    {
-        StackPanel panel = new();
-        if (slot.Profile is not { } profile)
-        {
-            panel.Children.Add(Ui.Text("This slot could not be read.", "Body"));
-            return panel;
-        }
-        TextBlock state = Ui.Text(slot.Enabled ? "Enabled" : "Disabled, so the mouse skips it", "Body", size: 12);
-        state.VerticalAlignment = VerticalAlignment.Center;
-        panel.Children.Add(Ui.Row(12, Ui.Text(slot.DisplayName, size: 17, bold: true, color: "Text"), state));
-        if (!profile.ChecksumOk)
-            panel.Children.Add(new Border
-            {
-                Background = Ui.Brush("WarningDim"), CornerRadius = new CornerRadius(9), Padding = new Thickness(12), Margin = new Thickness(0, 12, 0, 0),
-                Child = Ui.Text("The checksum doesn't match, so the mouse uses its factory profile instead of this slot.", "Body", size: 12, color: "Warning")
-            });
-
-        WrapPanel facts = new() { Margin = new Thickness(0, 16, 0, 0) };
-        facts.Children.Add(Fact("REPORT RATE", profile.ReportIntervalMs > 0 ? $"{1000 / profile.ReportIntervalMs} Hz" : "Unknown"));
-        StackPanel dpis = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 0) };
-        for (int i = 0; i < profile.Dpis.Count; i++)
-        {
-            bool isDefault = i == profile.DefaultDpiIndex, isShift = i == profile.ShiftDpiIndex;
-            dpis.Children.Add(new Border
-            {
-                CornerRadius = new CornerRadius(6), Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 6, 0),
-                Background = Ui.Brush(isDefault ? "AccentDim" : "Surface2"),
-                BorderBrush = Ui.Brush(isDefault ? "Accent" : isShift ? "Warning" : "Surface2"), BorderThickness = new Thickness(1),
-                ToolTip = isDefault && isShift ? "Default and DPI Shift speed" : isDefault ? "Default speed" : isShift ? "DPI Shift speed" : null,
-                Child = Ui.Text(profile.Dpis[i].ToString(), size: 13, bold: true, color: isDefault ? "Accent" : "Text")
-            });
-        }
-        facts.Children.Add(new StackPanel { Margin = new Thickness(0, 0, 24, 6), Children = { Ui.Text("DPI SPEEDS", "Overline"), dpis } });
-        facts.Children.Add(new StackPanel
-        {
-            Margin = new Thickness(0, 22, 0, 6), VerticalAlignment = VerticalAlignment.Center,
-            Children = { Ui.Row(14, Legend("Accent", "Default"), Legend("Warning", "DPI Shift")) }
-        });
-        panel.Children.Add(facts);
-
-        Grid table = new() { Margin = new Thickness(0, 14, 0, 0) };
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        void Cell(UIElement element, int row, int column)
-        {
-            Grid.SetRow(element, row);
-            Grid.SetColumn(element, column);
-            table.Children.Add(element);
-        }
-        table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Cell(Ui.Text("BUTTON", "Overline").With(new Thickness(0, 0, 0, 8)), 0, 0);
-        Cell(Ui.Text("ACTION", "Overline").With(new Thickness(0, 0, 0, 8)), 0, 1);
-        Cell(Ui.Text("WITH G-SHIFT", "Overline").With(new Thickness(0, 0, 0, 8)), 0, 2);
-        Dictionary<int, OnboardBinding> shifted = profile.ShiftButtons.ToDictionary(b => b.Index);
-        int line = 1;
-        foreach (OnboardBinding binding in profile.Buttons)
-        {
-            table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            if (line % 2 == 1)
-            {
-                Border stripe = new() { Background = Ui.Brush("Surface"), CornerRadius = new CornerRadius(6), Margin = new Thickness(-8, 0, -8, 0) };
-                Grid.SetColumnSpan(stripe, 3);
-                Cell(stripe, line, 0);
-            }
-            Cell(Ui.Text(OnboardProfiles.ControlName(binding.Index), size: 12.5, color: "Muted").With(new Thickness(0, 6, 8, 6)), line, 0);
-            Cell(BindingText(binding), line, 1);
-            Cell(shifted.TryGetValue(binding.Index, out OnboardBinding? shift) ? BindingText(shift) : Ui.Text("Same", size: 12.5, color: "Faint").With(new Thickness(0, 6, 8, 6)), line, 2);
-            line++;
-        }
-        panel.Children.Add(table);
-        return panel;
-    }
-
-    private static StackPanel Legend(string color, string label) =>
-        Ui.Row(6, new Border { Width = 10, Height = 10, CornerRadius = new CornerRadius(3), BorderBrush = Ui.Brush(color), BorderThickness = new Thickness(1.5), VerticalAlignment = VerticalAlignment.Center },
-            Ui.Text(label, "Body", size: 11.5));
-
-    private static TextBlock BindingText(OnboardBinding binding)
-    {
-        bool quiet = binding.Description is "No action" or "Disabled";
-        TextBlock text = Ui.Text(binding.Description, size: 12.5, color: quiet ? "Faint" : "Text").With(new Thickness(0, 6, 8, 6));
-        text.ToolTip = $"Stored as {binding.Raw}";
-        return text;
+        if (editing) onboard.StartEditing(service.ActiveProfile);
+        UpdateLayout();
+        ((ScrollViewer)Content).ScrollToEnd();
     }
 
     private FrameworkElement Tile(MouseProfile profile)

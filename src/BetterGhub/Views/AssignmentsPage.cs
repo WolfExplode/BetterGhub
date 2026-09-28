@@ -144,7 +144,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         if (service.Settings.BitFor(control) is not int bit) return;
         if (id == BuiltinActions.GShift && diagram.ShiftLayer) { shell.ShowToast("G-Shift can't be assigned on the G-Shift layer"); return; }
         if (id == BuiltinActions.DpiShift && control.IsWheel) { shell.ShowToast("DPI Shift can't be assigned to the wheel"); return; }
-        service.Assign(diagram.ShiftLayer, bit, id);
+        if (!service.Assign(diagram.ShiftLayer, bit, id)) return; // The service already explained why.
         shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(id)}");
         Refresh();
     }

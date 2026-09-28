@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using BetterGhub.Core;
 using BetterGhub.Device;
 using BetterGhub.Input;
@@ -27,6 +28,10 @@ internal sealed class MouseService : IDisposable
     private readonly Dictionary<int, Action> heldOutputs = [];
     private MouseHook? hook;
     private bool disposed;
+    /// <summary>The running on-board slot as a profile the pages edit, and as it was last read (to diff against).</summary>
+    private MouseProfile? onboardProfile, onboardBaseline;
+    private bool onboardDirty, onboardBackedUp;
+    private Timer? onboardTimer;
 
     public Settings Settings { get; }
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
@@ -38,7 +43,8 @@ internal sealed class MouseService : IDisposable
     public MouseControl? Learning { get; private set; }
     public IReadOnlyCollection<int> Pressed => pressed;
     public List<LogEntry> Log { get; } = [];
-    public MouseProfile ActiveProfile => Settings.ActiveProfile;
+    /// <summary>The profile the pages show and edit: the running on-board slot in on-board mode, else the BetterGhub profile.</summary>
+    public MouseProfile ActiveProfile => IsOnboard && onboardProfile is { } slot ? slot : Settings.ActiveProfile;
     public int DeviceReportRate => DeviceIntervalMs > 0 ? 1000 / DeviceIntervalMs : 0;
     /// <summary>Charge in percent, or null until the mouse reports it.</summary>
     public int? BatteryPercent { get; private set; }
@@ -46,8 +52,19 @@ internal sealed class MouseService : IDisposable
     /// <summary>Firmware versions, kept after a disconnect since they don't change without an update.</summary>
     public string? MouseFirmware { get; private set; }
     public string? ReceiverFirmware { get; private set; }
-    /// <summary>On-board profile slots as last read from the mouse; kept after a disconnect.</summary>
-    public IReadOnlyList<OnboardSlot>? OnboardSlots { get; private set; }
+    /// <summary>On-board memory as last read from the mouse; kept after a disconnect.</summary>
+    public OnboardMemory? Onboard { get; private set; }
+    public IReadOnlyList<OnboardSlot>? OnboardSlots => Onboard?.Slots;
+    /// <summary>A write to on-board memory is in flight.</summary>
+    public bool OnboardBusy { get; private set; }
+    /// <summary>Sector of the on-board slot the mouse runs from, or null in host mode (BetterGhub handles the buttons).</summary>
+    public int? OnboardSector { get; private set; }
+    /// <summary>
+    /// Connected with the mouse running an on-board slot: the mouse carries out its own buttons, and the
+    /// Assignments and Sensitivity pages edit that slot, saving each change to the mouse.
+    /// </summary>
+    public bool IsOnboard => State == ConnectionState.Connected && OnboardSector is not null;
+    public OnboardSlot? ActiveOnboardSlot => OnboardSector is int sector ? OnboardSlots?.FirstOrDefault(s => s.Sector == sector) : null;
     /// <summary>Report interval the battery estimate uses; 1 ms until the mouse reports its rate.</summary>
     public int PowerIntervalMs => DeviceIntervalMs > 0 ? DeviceIntervalMs : 1;
 
@@ -61,6 +78,10 @@ internal sealed class MouseService : IDisposable
     /// <summary>Settings changed outside the page being edited (profile switch, DPI button, calibration).</summary>
     public event Action? SettingsChanged;
     public event Action<MouseControl, int>? Calibrated;
+    /// <summary>An on-board memory write finished: success and a message for the user.</summary>
+    public event Action<bool, string>? OnboardWritten;
+    /// <summary>Something the user should see as a toast, e.g. an assignment the mouse can't store.</summary>
+    public event Action<string>? Notice;
 
     public MouseService(SynchronizationContext ui)
     {
@@ -85,10 +106,12 @@ internal sealed class MouseService : IDisposable
         Logged?.Invoke(entry);
     }
 
+    /// <summary>Saves settings; in on-board mode also writes any change to the running slot, shortly after edits stop.</summary>
     public void Save()
     {
         try { Settings.Save(); }
         catch (Exception error) { Write("Could not save settings: " + error.Message); }
+        if (IsOnboard) ScheduleOnboardWrite();
     }
 
     public void ExportSettings(string path)
@@ -129,6 +152,7 @@ internal sealed class MouseService : IDisposable
         }
         try
         {
+            bridge.OnboardSector = Settings.OnboardSector ?? 0;
             bridge.Start();
             State = ConnectionState.Connecting;
             StateDetail = "Looking for the LIGHTSPEED receiver…";
@@ -150,6 +174,10 @@ internal sealed class MouseService : IDisposable
 
     private void SetDisconnected(string reason)
     {
+        OnboardBusy = false;
+        onboardDirty = false;
+        onboardTimer?.Dispose();
+        onboardTimer = null;
         State = bridge.Running ? ConnectionState.Connecting : ConnectionState.Disconnected;
         StateDetail = reason;
         BatteryPercent = null;
@@ -202,8 +230,34 @@ internal sealed class MouseService : IDisposable
                 StateChanged?.Invoke();
                 break;
             case OnboardMemoryEvent onboard:
-                OnboardSlots = onboard.Slots;
+                Onboard = onboard.Memory;
+                bool replaced = RebuildOnboardProfile();
+                if (onboardDirty && !OnboardBusy) FlushOnboard(); // Edits made while the last write was in flight.
                 StateChanged?.Invoke();
+                if (replaced && IsOnboard) SettingsChanged?.Invoke();
+                break;
+            case OnboardWriteEvent written:
+                OnboardBusy = false;
+                Write((written.Success ? "On-board memory: " : "On-board write failed: ") + written.Message);
+                OnboardWritten?.Invoke(written.Success, written.Message);
+                StateChanged?.Invoke();
+                break;
+            case ModeEvent mode:
+                bool changed = OnboardSector != (mode.OnboardSector == 0 ? null : mode.OnboardSector);
+                OnboardSector = mode.OnboardSector == 0 ? null : mode.OnboardSector;
+                if (Settings.OnboardSector != OnboardSector)
+                {
+                    Settings.OnboardSector = OnboardSector;
+                    try { Settings.Save(); } catch (Exception error) { Write("Could not save settings: " + error.Message); }
+                }
+                ReleaseAll();
+                onboardDirty = false;
+                onboardBackedUp = false;
+                RebuildOnboardProfile();
+                if (changed) Write(OnboardSector is null ? "BetterGhub handles the mouse (host mode)" : $"Mouse runs {ActiveOnboardSlot?.DisplayName ?? "its on-board slot"} from its own memory");
+                if (OnboardSector is null && State == ConnectionState.Connected) ApplyDeviceSettings();
+                StateChanged?.Invoke();
+                SettingsChanged?.Invoke();
                 break;
             case BatteryEvent battery:
                 if (BatteryPercent is null) Write($"Battery {battery.Percent}%{(battery.Charging ? ", charging" : "")}");
@@ -225,7 +279,7 @@ internal sealed class MouseService : IDisposable
         try
         {
             hook = new MouseHook(control =>
-                State == ConnectionState.Connected
+                State == ConnectionState.Connected && !IsOnboard
                 && MouseControls.ById(control) is { } physical && Settings.BitFor(physical) is int bit
                 && !string.IsNullOrEmpty(EffectiveAssignment(bit)));
         }
@@ -242,6 +296,7 @@ internal sealed class MouseService : IDisposable
         }
         ButtonChanged?.Invoke(bit, true);
         ButtonChanged?.Invoke(bit, false);
+        if (IsOnboard) return; // The mouse carries out its own on-board actions.
         HandleAssignment(bit, true, pulse: true);
     }
 
@@ -259,6 +314,7 @@ internal sealed class MouseService : IDisposable
             return;
         }
         if (!down && swallowRelease.Remove(bit)) return;
+        if (IsOnboard) return;
         HandleAssignment(bit, down);
     }
 
@@ -306,11 +362,29 @@ internal sealed class MouseService : IDisposable
             : profile.Assignments.GetValueOrDefault(bit) ?? Settings.ControlFor(bit)?.SoftwareDefault ?? "";
     }
 
-    public void Assign(bool shiftLayer, int bit, string? id)
+    /// <summary>Assigns an action; false (with a <see cref="Notice"/>) when the on-board slot can't store it.</summary>
+    public bool Assign(bool shiftLayer, int bit, string? id)
     {
+        if (IsOnboard && OnboardRefusal(bit, id) is { } refusal)
+        {
+            Write(refusal);
+            Notice?.Invoke(refusal);
+            return false;
+        }
         Dictionary<int, string> bindings = shiftLayer ? ActiveProfile.ShiftAssignments : ActiveProfile.Assignments;
         if (string.IsNullOrEmpty(id)) bindings.Remove(bit); else bindings[bit] = id;
         Save();
+        return true;
+    }
+
+    private string? OnboardRefusal(int bit, string? id)
+    {
+        MouseControl? control = Settings.ControlFor(bit);
+        if (control is null || OnboardProfiles.IndexFor(control.Id) is null)
+            return $"{control?.Label ?? "This control"} can't be changed in on-board memory";
+        if (!string.IsNullOrEmpty(id) && OnboardProfiles.Encode(id) is null)
+            return $"The mouse can't store {Settings.DescribeAssignment(id)}. Macros, launching apps, double click, lock screen and wheel notches only work when BetterGhub handles the mouse.";
+        return null;
     }
 
     private void HandleAssignment(int bit, bool down, bool pulse = false)
@@ -458,7 +532,7 @@ internal sealed class MouseService : IDisposable
 
     public void SendDpi(int dpi)
     {
-        if (State != ConnectionState.Connected) return;
+        if (State != ConnectionState.Connected || IsOnboard) return; // On-board, the slot's own DPI applies.
         try { bridge.SetDpi(dpi); }
         catch (Exception error) { Write(error.Message); }
     }
@@ -470,9 +544,246 @@ internal sealed class MouseService : IDisposable
         bridge.ReadOnboardMemory();
     }
 
+    // ── On-board memory ───────────────────────────────────────────────────────
+
+    public static string OnboardBackupFolder => Path.Combine(Path.GetDirectoryName(Settings.FilePath) ?? ".", "onboard-backups");
+
+    /// <summary>Starting point for editing a slot: what the mouse holds now.</summary>
+    public static OnboardEdit EditFor(OnboardSlot slot)
+    {
+        OnboardProfile profile = slot.Profile ?? throw new InvalidOperationException("This slot could not be read");
+        return new OnboardEdit(profile.Name, slot.Enabled, Math.Max(1, profile.ReportIntervalMs), profile.Dpis,
+            Math.Min(profile.DefaultDpiIndex, profile.Dpis.Count - 1), Math.Min(profile.ShiftDpiIndex, profile.Dpis.Count - 1),
+            new Dictionary<int, uint>(), new Dictionary<int, uint>());
+    }
+
+    /// <summary>
+    /// Converts a BetterGhub profile into an edit: its name, DPI speeds, report rate and every assignment the
+    /// mouse can store. <paramref name="notes"/> lists what couldn't be carried over.
+    /// </summary>
+    public OnboardEdit EditFromProfile(MouseProfile profile, bool enabled, List<string> notes)
+    {
+        List<int> stages = profile.DpiStages.Where(d => d is >= 100 and <= 25600).Distinct().Order().ToList();
+        if (stages.Count == 0) stages = [profile.Dpi];
+        if (stages.Count > 5)
+        {
+            notes.Add($"Only 5 DPI speeds fit; kept {string.Join(", ", stages.Take(5))}");
+            stages = stages.Take(5).ToList();
+        }
+        int Nearest(int dpi) => stages.IndexOf(stages.MinBy(s => Math.Abs(s - dpi)));
+        int defaultIndex = Nearest(profile.Dpi), shiftIndex = Nearest(profile.ShiftDpi);
+        if (stages[shiftIndex] != profile.ShiftDpi) notes.Add($"DPI Shift {profile.ShiftDpi} isn't one of the speeds; the mouse will use {stages[shiftIndex]}");
+        Dictionary<int, uint> buttons = [], shifted = [];
+        foreach (MouseControl control in MouseControls.All)
+        {
+            if (OnboardProfiles.IndexFor(control.Id) is not int index) continue;
+            int? bit = Settings.BitFor(control);
+            string normal = bit is int b && profile.Assignments.GetValueOrDefault(b) is { Length: > 0 } assigned ? assigned : OnboardProfiles.NativeAction(control);
+            string shift = normal == BuiltinActions.GShift ? normal
+                : bit is int s && profile.ShiftAssignments.GetValueOrDefault(s) is { Length: > 0 } shiftAssigned ? shiftAssigned : normal;
+            if (OnboardProfiles.Encode(normal) is uint code) buttons[index] = code;
+            else notes.Add($"{control.Label}: {Settings.DescribeAssignment(normal)} can't be stored on the mouse; left as it was");
+            if (OnboardProfiles.Encode(shift) is uint shiftCode) shifted[index] = shiftCode;
+            else if (shift != normal) notes.Add($"{control.Label} with G-Shift: {Settings.DescribeAssignment(shift)} can't be stored on the mouse; left as it was");
+        }
+        return new OnboardEdit(profile.Name, enabled, 1000 / Math.Clamp(profile.ReportRate, 125, 1000), stages, defaultIndex, shiftIndex, buttons, shifted);
+    }
+
+    /// <summary>Backs up every slot (unless <paramref name="backup"/> is false), then writes the edited slot and the directory if enabling changed.</summary>
+    public void SaveOnboardSlot(OnboardSlot slot, OnboardEdit edit, bool backup = true)
+    {
+        OnboardMemory memory = RequireOnboard();
+        OnboardProfile profile = slot.Profile ?? throw new InvalidOperationException("This slot could not be read");
+        List<SectorWrite> writes = [new(slot.Sector, profile.Sector, OnboardProfiles.Build(profile.Sector, edit))];
+        if (edit.Enabled != slot.Enabled)
+        {
+            if (!edit.Enabled && memory.Slots.Count(s => s.Enabled) <= 1) throw new InvalidOperationException("Keep at least one slot enabled");
+            writes.Add(new(0, memory.Directory, OnboardProfiles.SetEnabled(memory.Directory, slot.Sector, edit.Enabled)));
+        }
+        if (!edit.Enabled && slot.Sector == OnboardSector) throw new InvalidOperationException("The mouse is running this slot; switch to another one first");
+        if (backup) BackupOnboard(memory);
+        SendWrite(writes, $"Saving {(edit.Name.Length > 0 ? edit.Name : $"Profile {slot.Number}")} to slot {slot.Number}");
+    }
+
+    /// <summary>Writes a backup file's sectors back, after backing up what's there now. Returns the new backup's path.</summary>
+    public string RestoreOnboard(string path)
+    {
+        OnboardMemory memory = RequireOnboard();
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+        JsonElement sectors = document.RootElement.GetProperty("sectors");
+        List<SectorWrite> writes = [];
+        foreach (JsonProperty entry in sectors.EnumerateObject())
+        {
+            int sector = int.Parse(entry.Name);
+            byte[] data = Convert.FromHexString(entry.Value.GetString() ?? "");
+            byte[]? current = sector == 0 ? memory.Directory : memory.Slots.FirstOrDefault(s => s.Sector == sector)?.Profile?.Sector;
+            if (current is null) throw new InvalidDataException($"Sector {sector} in the backup isn't a slot on this mouse");
+            if (data.Length != memory.SectorSize) throw new InvalidDataException("The backup is from a mouse with a different memory layout");
+            writes.Add(new(sector, current, data));
+        }
+        if (writes.Count == 0) throw new InvalidDataException("The backup has no sectors");
+        string backup = BackupOnboard(memory);
+        SendWrite(writes, "Restoring on-board memory from " + Path.GetFileName(path));
+        return backup;
+    }
+
+    /// <summary>
+    /// Runs the mouse from <paramref name="slot"/> in its own memory. BetterGhub stays connected: the pages then
+    /// edit that slot. Remembered, so BetterGhub reconnects in on-board mode.
+    /// </summary>
+    public void SwitchToOnboard(OnboardSlot slot)
+    {
+        if (State != ConnectionState.Connected) throw new InvalidOperationException("Connect the mouse first");
+        if (!slot.Enabled) throw new InvalidOperationException("Enable this slot first");
+        FlushOnboard();
+        bridge.SetMode(slot.Sector);
+    }
+
+    /// <summary>Back to host mode: BetterGhub handles the buttons with its own profiles.</summary>
+    public void UseHostMode()
+    {
+        FlushOnboard();
+        Settings.OnboardSector = null;
+        try { Settings.Save(); } catch (Exception error) { Write("Could not save settings: " + error.Message); }
+        if (State == ConnectionState.Connected) bridge.SetMode(0);
+    }
+
+    /// <summary>
+    /// Refreshes the slot profile from the latest read. While edits are waiting to be written the edited
+    /// profile is kept and only the baseline moves. Returns whether the pages' profile was replaced.
+    /// </summary>
+    private bool RebuildOnboardProfile()
+    {
+        if (ActiveOnboardSlot is not { Profile: not null } slot)
+        {
+            onboardProfile = onboardBaseline = null;
+            return true;
+        }
+        onboardBaseline = ProfileFromSlot(slot);
+        if (onboardDirty || OnboardBusy) return false;
+        onboardProfile = ProfileFromSlot(slot);
+        return true;
+    }
+
+    /// <summary>A slot as a BetterGhub profile: its DPI speeds, report rate, and each binding decoded to an action.</summary>
+    private MouseProfile ProfileFromSlot(OnboardSlot slot)
+    {
+        OnboardProfile stored = slot.Profile!;
+        List<int> dpis = stored.Dpis.Count > 0 ? [.. stored.Dpis] : [800];
+        MouseProfile profile = new()
+        {
+            Id = $"onboard-{slot.Sector}",
+            Name = slot.DisplayName,
+            DpiStages = dpis,
+            Dpi = dpis[Math.Clamp(stored.DefaultDpiIndex, 0, dpis.Count - 1)],
+            ShiftDpi = dpis[Math.Clamp(stored.ShiftDpiIndex, 0, dpis.Count - 1)],
+            ReportRate = 1000 / Math.Clamp(stored.ReportIntervalMs, 1, 8)
+        };
+        foreach (MouseControl control in MouseControls.All)
+        {
+            if (OnboardProfiles.IndexFor(control.Id) is not int index || Settings.BitFor(control) is not int bit) continue;
+            string normal = OnboardProfiles.BindingAt(stored.Sector, index, shift: false) is uint code ? OnboardProfiles.Decode(code) : OnboardProfiles.NativeAction(control);
+            profile.Assignments[bit] = normal;
+            if (OnboardProfiles.BindingAt(stored.Sector, index, shift: true) is uint shiftCode && OnboardProfiles.Decode(shiftCode) is var shifted && shifted != normal)
+                profile.ShiftAssignments[bit] = shifted;
+        }
+        return profile;
+    }
+
+    private void ScheduleOnboardWrite()
+    {
+        onboardDirty = true;
+        onboardTimer?.Dispose();
+        onboardTimer = new Timer(_ => Post(FlushOnboard), null, 600, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// Writes what changed in the slot profile since it was read. Only changed buttons are written, so bindings
+    /// BetterGhub can't show (or controls that aren't calibrated) stay as the mouse had them.
+    /// </summary>
+    private void FlushOnboard()
+    {
+        onboardTimer?.Dispose();
+        onboardTimer = null;
+        if (!onboardDirty) return;
+        if (!IsOnboard || onboardProfile is not { } edited || onboardBaseline is not { } baseline || ActiveOnboardSlot is not { Profile: { } stored } slot)
+        {
+            onboardDirty = false;
+            return;
+        }
+        if (OnboardBusy) return; // Runs again when the write's re-read arrives.
+        onboardDirty = false;
+
+        Dictionary<int, uint> buttons = [], shifted = [];
+        foreach (MouseControl control in MouseControls.All)
+        {
+            if (OnboardProfiles.IndexFor(control.Id) is not int index || Settings.BitFor(control) is not int bit) continue;
+            string Normal(MouseProfile p) => p.Assignments.GetValueOrDefault(bit) is { Length: > 0 } a ? a : OnboardProfiles.NativeAction(control);
+            string Shift(MouseProfile p, string normal) => normal == BuiltinActions.GShift ? normal
+                : p.ShiftAssignments.GetValueOrDefault(bit) is { Length: > 0 } a ? a : normal;
+            string normal = Normal(edited), before = Normal(baseline);
+            if (normal != before && OnboardProfiles.Encode(normal) is uint code) buttons[index] = code;
+            string shift = Shift(edited, normal), shiftBefore = Shift(baseline, before);
+            if (shift != shiftBefore && OnboardProfiles.Encode(shift) is uint shiftCode) shifted[index] = shiftCode;
+        }
+        List<int> stages = edited.DpiStages.Where(d => d is >= 100 and <= 25600).Distinct().Take(5).ToList();
+        if (stages.Count == 0) stages = [edited.Dpi];
+        int Nearest(int dpi) => stages.IndexOf(stages.MinBy(s => Math.Abs(s - dpi)));
+        int shiftIndex = Nearest(edited.ShiftDpi);
+        if (stages[shiftIndex] != edited.ShiftDpi)
+            Notice?.Invoke($"On-board memory can only shift to one of the DPI speeds, so DPI Shift uses {stages[shiftIndex]}");
+        OnboardEdit edit = new(stored.Name, slot.Enabled, 1000 / Math.Clamp(edited.ReportRate, 125, 1000), stages, Nearest(edited.Dpi), shiftIndex, buttons, shifted);
+        try
+        {
+            if (OnboardProfiles.Build(stored.Sector, edit).AsSpan().SequenceEqual(stored.Sector)) return;
+            SaveOnboardSlot(slot, edit, backup: !onboardBackedUp);
+            onboardBackedUp = true; // One backup per on-board session, not one per change.
+        }
+        catch (Exception error)
+        {
+            Write("Could not save to the mouse: " + error.Message);
+            Notice?.Invoke("Could not save to the mouse: " + error.Message);
+        }
+    }
+
+    private OnboardMemory RequireOnboard()
+    {
+        if (State != ConnectionState.Connected) throw new InvalidOperationException("Connect the mouse first");
+        if (OnboardBusy) throw new InvalidOperationException("A write is already in progress");
+        return Onboard ?? throw new InvalidOperationException("On-board memory hasn't been read yet");
+    }
+
+    private void SendWrite(List<SectorWrite> writes, string description)
+    {
+        OnboardBusy = true;
+        Write(description + "…");
+        bridge.WriteOnboard(writes);
+        StateChanged?.Invoke();
+    }
+
+    /// <summary>Saves the directory and every slot as hex, so any write can be undone with Restore.</summary>
+    private string BackupOnboard(OnboardMemory memory)
+    {
+        Directory.CreateDirectory(OnboardBackupFolder);
+        Dictionary<string, string> sectors = new() { ["0"] = Convert.ToHexString(memory.Directory) };
+        foreach (OnboardSlot slot in memory.Slots)
+            if (slot.Profile is { } profile) sectors[slot.Sector.ToString()] = Convert.ToHexString(profile.Sector);
+        string path = Path.Combine(OnboardBackupFolder, $"onboard-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(new
+        {
+            created = DateTime.Now,
+            mouse = "G502 X LIGHTSPEED",
+            firmware = MouseFirmware,
+            sectorSize = memory.SectorSize,
+            sectors
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        Write("On-board memory backed up to " + path);
+        return path;
+    }
+
     public void SendReportRate(int hz)
     {
-        if (State != ConnectionState.Connected) return;
+        if (State != ConnectionState.Connected || IsOnboard) return;
         try { bridge.SetReportInterval(1000 / hz); }
         catch (Exception error) { Write(error.Message); }
     }
@@ -487,6 +798,7 @@ internal sealed class MouseService : IDisposable
 
     public void SelectProfile(MouseProfile profile)
     {
+        if (IsOnboard) UseHostMode(); // Picking a BetterGhub profile hands the buttons back to BetterGhub.
         if (Settings.ActiveProfileId == profile.Id && Settings.ActiveProfile == profile) return;
         Settings.ActiveProfileId = profile.Id;
         Save();
@@ -501,7 +813,7 @@ internal sealed class MouseService : IDisposable
     /// <summary>Picks the profile for the foreground application. Called on a UI timer.</summary>
     public void AutoSelectProfile(nint ownWindow)
     {
-        if (!Settings.AutoSwitchProfiles) return;
+        if (!Settings.AutoSwitchProfiles || IsOnboard) return;
         try
         {
             nint foreground = GetForegroundWindow();
@@ -527,12 +839,21 @@ internal sealed class MouseService : IDisposable
         BatteryPercent = 77;
         MouseFirmware = "30.0.14";
         ReceiverFirmware = "4.2.9";
-        OnboardSlots = SampleOnboardSlots();
+        Onboard = SampleOnboard();
         StateChanged?.Invoke();
     }
 
+    /// <summary>Fakes running on-board slot 1 for --snapshot renders.</summary>
+    internal void SimulateOnboard()
+    {
+        OnboardSector = 1;
+        RebuildOnboardProfile();
+        StateChanged?.Invoke();
+        SettingsChanged?.Invoke();
+    }
+
     /// <summary>Slots shaped like a real read (G HUB's factory layout), for --snapshot renders.</summary>
-    private static List<OnboardSlot> SampleOnboardSlots()
+    private static OnboardMemory SampleOnboard()
     {
         byte[] sector = new byte[255];
         Array.Fill(sector, (byte)0xFF);
@@ -545,7 +866,10 @@ internal sealed class MouseService : IDisposable
         sector[^2] = (byte)(crc >> 8);
         sector[^1] = (byte)crc;
         OnboardProfile profile = OnboardProfiles.Parse(sector, buttons.Length);
-        return [.. Enumerable.Range(1, 5).Select(n => new OnboardSlot(n, n, n <= 2, profile))];
+        byte[] directory = new byte[255];
+        Array.Fill(directory, (byte)0xFF);
+        for (int n = 1; n <= 5; n++) new byte[] { 0, (byte)n, (byte)(n <= 2 ? 1 : 0), 0xFF }.CopyTo(directory, (n - 1) * 4);
+        return new OnboardMemory([.. Enumerable.Range(1, 5).Select(n => new OnboardSlot(n, n, n <= 2, profile))], OnboardProfiles.WithChecksum(directory), 255, buttons.Length);
     }
 
     public void Dispose()

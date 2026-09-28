@@ -183,6 +183,13 @@ internal sealed class DevicePage : UserControl, IPage
         receiverFirmware.Text = service.ReceiverFirmware ?? "Connect to read";
     }
 
+    private void SwitchToOnboard(Core.OnboardSlot slot)
+    {
+        Window owner = Window.GetWindow(this);
+        try { service.SwitchToOnboard(slot); }
+        catch (Exception error) { MessageBox.Show(owner, error.Message, "Could not switch", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
     private void RenderConnection()
     {
         connection.Children.Clear();
@@ -197,7 +204,9 @@ internal sealed class DevicePage : UserControl, IPage
         connection.Children.Add(Ui.Row(8,
             new System.Windows.Shapes.Ellipse { Width = 10, Height = 10, Fill = Ui.Brush(color == "Muted" ? "Faint" : color), VerticalAlignment = VerticalAlignment.Center },
             Ui.Text(title, size: 15, bold: true, color: "Text")).With(new Thickness(0, 14, 0, 4)));
-        string detail = service.State == ConnectionState.Connected
+        string detail = service.IsOnboard
+            ? $"Mouse runs {service.ActiveOnboardSlot?.DisplayName ?? "an on-board slot"} from its own memory. The Assignments and Sensitivity pages edit that slot."
+            : service.State == ConnectionState.Connected
             ? $"{service.DeviceDpi} DPI · {service.DeviceReportRate} Hz · host mode and button reporting on"
             : service.StateDetail.Length > 0 ? service.StateDetail : "Click Connect to take over the mouse from its onboard profile.";
         connection.Children.Add(Ui.Text(detail, "Body", size: 12).With(new Thickness(18, 0, 0, 16)));
@@ -211,7 +220,19 @@ internal sealed class DevicePage : UserControl, IPage
             ? Ui.Button("Disconnect", service.Disconnect, "Btn")
             : Ui.Button("Connect mouse", service.Connect, "PrimaryBtn");
         action.HorizontalAlignment = HorizontalAlignment.Left;
-        connection.Children.Add(action);
+        if (service.IsOnboard)
+        {
+            Button host = Ui.Button("Use BetterGhub profiles", service.UseHostMode, "Btn", "",
+                "Hand the buttons back to BetterGhub: its profiles, macros and app switching");
+            connection.Children.Add(Ui.Row(8, action, host));
+        }
+        else if (service.State == ConnectionState.Connected && service.OnboardSlots?.FirstOrDefault(s => s.Enabled) is { } slot)
+        {
+            Button onboard = Ui.Button("Use on-board memory", () => SwitchToOnboard(slot), "Btn", "",
+                $"Run the mouse from {slot.DisplayName} (slot {slot.Number}) in its own memory, and edit that slot on the Assignments and Sensitivity pages. Pick another slot from the profile menu.");
+            connection.Children.Add(Ui.Row(8, action, onboard));
+        }
+        else connection.Children.Add(action);
 
         CheckBox auto = new()
         {

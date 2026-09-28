@@ -34,6 +34,7 @@ public partial class MainWindow : Window
         service.StateChanged += UpdateChrome;
         service.SettingsChanged += () => (PageHost.Content as IPage)?.Refresh();
         service.Calibrated += (control, bit) => ShowToast($"{control.Label} calibrated · 0x{bit:x4}");
+        service.Notice += ShowToast;
         StateChanged += (_, _) => UpdateMaximized();
         SizeChanged += (_, _) => UpdateCompact();
         SourceInitialized += (_, _) => AttachInput();
@@ -122,6 +123,7 @@ public partial class MainWindow : Window
     {
         (string title, Brush dot, string detail, string button) = service.State switch
         {
+            ConnectionState.Connected when service.IsOnboard => ("Connected", (Brush)FindResource("Success"), $"On-board · {service.ActiveOnboardSlot?.DisplayName ?? "slot"}", "Disconnect"),
             ConnectionState.Connected => ("Connected", (Brush)FindResource("Success"), $"{service.DeviceDpi} DPI · {service.DeviceReportRate} Hz", "Disconnect"),
             ConnectionState.Connecting => ("Connecting", (Brush)FindResource("Warning"), Fallback(service.StateDetail, "Looking for the receiver…"), "Cancel"),
             ConnectionState.GHubRunning => ("G HUB is running", (Brush)FindResource("Warning"), "Exit G HUB completely. BetterGhub connects when it closes.", "Try again"),
@@ -138,6 +140,13 @@ public partial class MainWindow : Window
         GShiftBadge.Visibility = service.GShiftHeld ? Visibility.Visible : Visibility.Collapsed;
 
         MouseProfile profile = service.ActiveProfile;
+        if (service.IsOnboard && service.ActiveOnboardSlot is { } slot)
+        {
+            ProfileKind.Text = "ON-BOARD MEMORY";
+            ProfileName.Text = slot.DisplayName;
+            ProfileIcon.Content = SlotMark(slot.Number, 18);
+            return;
+        }
         ProfileKind.Text = profile.IsDesktop ? "DESKTOP" : "APPLICATION";
         ProfileName.Text = profile.Name;
         ProfileIcon.Content = ShellIcons.Element(profile, 18);
@@ -238,25 +247,67 @@ public partial class MainWindow : Window
         base.OnDeactivated(e);
     }
 
+    /// <summary>
+    /// BetterGhub's profiles, then the mouse's enabled on-board slots. Picking a slot runs the mouse from its
+    /// own memory and the pages edit that slot; picking a profile hands the buttons back to BetterGhub.
+    /// </summary>
     private void BuildProfileList()
     {
         ProfileList.Children.Clear();
+        bool onboard = service.IsOnboard;
         foreach (MouseProfile profile in service.Settings.Profiles)
         {
             RadioButton row = new()
             {
                 Style = (Style)FindResource("Row"),
-                IsChecked = profile == service.ActiveProfile,
+                IsChecked = !onboard && profile == service.ActiveProfile,
                 Content = ProfileRow(profile),
                 GroupName = "ProfilePick"
             };
             row.Click += (_, _) => { service.SelectProfile(profile); CloseProfileMenu(); };
             ProfileList.Children.Add(row);
         }
+        if (service.State == ConnectionState.Connected && service.OnboardSlots?.Where(s => s.Enabled).ToList() is { Count: > 0 } slots)
+        {
+            ProfileList.Children.Add(new TextBlock { Text = "ON-BOARD MEMORY", Style = (Style)FindResource("Overline"), Margin = new Thickness(12, 12, 0, 4) });
+            foreach (OnboardSlot slot in slots)
+            {
+                DockPanel content = new();
+                content.Children.Add(SlotMark(slot.Number, 16).With(new Thickness(0, 0, 10, 0)));
+                content.Children.Add(new TextBlock { Text = slot.DisplayName, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+                RadioButton row = new()
+                {
+                    Style = (Style)FindResource("Row"),
+                    IsChecked = onboard && slot.Sector == service.OnboardSector,
+                    Content = content,
+                    GroupName = "ProfilePick",
+                    ToolTip = "Run the mouse from this slot in its own memory. Changes you make are saved to the mouse."
+                };
+                row.Click += (_, _) =>
+                {
+                    CloseProfileMenu();
+                    try { service.SwitchToOnboard(slot); }
+                    catch (Exception error) { ShowToast(error.Message); }
+                };
+                ProfileList.Children.Add(row);
+            }
+        }
         Button manage = new() { Style = (Style)FindResource("GhostBtn"), Content = "Manage profiles…", HorizontalContentAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
         manage.Click += (_, _) => { CloseProfileMenu(); Navigate("Profiles"); };
         ProfileList.Children.Add(manage);
     }
+
+    /// <summary>A slot number in a rounded square, standing in for a profile's app icon.</summary>
+    private static Border SlotMark(int number, double size) => new()
+    {
+        Width = size, Height = size, CornerRadius = new CornerRadius(4), BorderThickness = new Thickness(1.2),
+        BorderBrush = Ui.Brush("Accent"), VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock
+        {
+            Text = number.ToString(), FontSize = size * 0.62, FontWeight = FontWeights.Bold, Foreground = Ui.Brush("Accent"),
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+        }
+    };
 
     private static FrameworkElement ProfileRow(MouseProfile profile)
     {

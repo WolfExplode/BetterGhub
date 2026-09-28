@@ -74,7 +74,9 @@ internal sealed class SensitivityPage : UserControl, IPage
 
     private void RenderDeviceLine()
     {
-        deviceLine.Text = service.State == ConnectionState.Connected
+        deviceLine.Text = service.IsOnboard
+            ? $"Editing {service.ActiveProfile.Name} in the mouse's on-board memory. Changes are saved to the mouse."
+            : service.State == ConnectionState.Connected
             ? $"Mouse reports {service.DeviceDpi} DPI at {service.DeviceReportRate} Hz. Changes apply instantly and are kept in the {service.ActiveProfile.Name} profile."
             : $"Mouse not connected. Changes are saved in the {service.ActiveProfile.Name} profile and applied when it connects.";
     }
@@ -224,6 +226,8 @@ internal sealed class SensitivityPage : UserControl, IPage
         }, "Btn");
         reset.HorizontalAlignment = HorizontalAlignment.Stretch;
         side.Children.Add(reset);
-        side.Children.Add(Ui.Text("Settings are sent to the mouse's working memory only. Onboard profiles are never overwritten.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 12, 0, 0)));
+        side.Children.Add(Ui.Text(service.IsOnboard
+            ? "Saved to this slot in the mouse's on-board memory. DPI Shift uses whichever speed is closest, since the slot can only shift to one of its speeds."
+            : "Settings are sent to the mouse's working memory only. On-board slots change only when you run one and edit it.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 12, 0, 0)));
     }
 }

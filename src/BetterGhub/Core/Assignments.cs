@@ -10,6 +10,8 @@ public static class Assignments
 {
     public const string KeyPrefix = "key:";
     public const string LaunchPrefix = "launch:";
+    /// <summary>"onboard:900A0000": an on-board binding BetterGhub has no action for, kept as its stored bytes.</summary>
+    public const string OnboardPrefix = "onboard:";
 
     public static string KeyId(string combo) => KeyPrefix + combo;
     public static string LaunchId(string path) => LaunchPrefix + path;
@@ -28,6 +30,8 @@ public static class Assignments
                 ?? SystemCommandName(combo)
                 ?? DisplayCombo(combo);
         if (LaunchPath(id) is { } path) return "Launch " + Path.GetFileNameWithoutExtension(path);
+        if (id.StartsWith(OnboardPrefix, StringComparison.Ordinal) && uint.TryParse(id[OnboardPrefix.Length..], System.Globalization.NumberStyles.HexNumber, null, out uint binding))
+            return OnboardProfiles.Describe(binding);
         return null;
     }
 

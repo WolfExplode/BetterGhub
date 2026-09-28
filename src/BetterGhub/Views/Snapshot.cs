@@ -51,10 +51,23 @@ internal static class Snapshot
         window.FindPage<ProfilesPage>()?.ShowOnboard();
         await Settle();
         Save(window, Path.Combine(folder, $"profiles-onboard{suffix}.png"));
+        window.FindPage<ProfilesPage>()?.ShowOnboard(editing: true);
+        await Settle();
+        window.FindPage<ProfilesPage>()?.ShowOnboard();
+        await Settle();
+        Save(window, Path.Combine(folder, $"profiles-onboard-edit{suffix}.png"));
         window.Navigate("Assignments");
         window.FindPage<AssignmentsPage>()?.SelectControl("G4");
         await Settle();
         Save(window, Path.Combine(folder, $"assignments-side{suffix}.png"));
+
+        window.Service.SimulateOnboard();
+        foreach (string page in new[] { "Assignments", "Sensitivity" })
+        {
+            window.Navigate(page);
+            await Settle();
+            Save(window, Path.Combine(folder, $"{page.ToLowerInvariant()}-onboard{suffix}.png"));
+        }
 
         Application.Current.Shutdown();
     }
