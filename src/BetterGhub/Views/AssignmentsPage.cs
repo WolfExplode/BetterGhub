@@ -22,6 +22,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private string tabKey = "";
     private string search = "";
     private bool calibrating;
+    /// <summary>Left and right click stay locked until the warning is acknowledged, once per session.</summary>
+    private readonly HashSet<string> unlockedClicks = [];
 
     public AssignmentsPage(MouseService service, MainWindow shell)
     {
@@ -144,6 +146,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
         if (service.Settings.BitFor(control) is not int bit) return;
         if (id == BuiltinActions.GShift && diagram.ShiftLayer) { shell.ShowToast("G-Shift can't be assigned on the G-Shift layer"); return; }
         if (id == BuiltinActions.DpiShift && control.IsWheel) { shell.ShowToast("DPI Shift can't be assigned to the wheel"); return; }
+        if (ClickLocked(control))
+        {
+            SelectControl(control.Id);
+            shell.ShowToast($"Read the warning and choose Change anyway before reassigning {control.DefaultAction.ToLowerInvariant()}");
+            return;
+        }
         if (!service.Assign(diagram.ShiftLayer, bit, id)) return; // The service already explained why.
         shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(id)}");
         Refresh();
@@ -157,9 +165,18 @@ internal sealed class AssignmentsPage : UserControl, IPage
         Refresh();
     }
 
-    /// <summary>Lets an option row be dragged onto a control in the diagram to assign it.</summary>
-    private void MakeDraggable(RadioButton row, string id)
+    /// <summary>
+    /// Lets an option row be dragged onto a control in the diagram to assign it. Dragging is the only way to
+    /// assign from the list, so a stray click can't overwrite a binding.
+    /// </summary>
+    private void MakeDraggable(RadioButton row, string id, bool isCurrent)
     {
+        row.Cursor = System.Windows.Input.Cursors.Hand;
+        row.Click += (_, _) =>
+        {
+            row.IsChecked = isCurrent;
+            if (!isCurrent) shell.ShowToast($"Drag {service.Settings.DescribeAssignment(id)} onto a button, or right-click it, to assign it");
+        };
         Point? start = null;
         row.PreviewMouseLeftButtonDown += (_, e) => start = e.GetPosition(row);
         row.PreviewMouseMove += (_, e) =>
@@ -257,9 +274,15 @@ internal sealed class AssignmentsPage : UserControl, IPage
             panel.Children.Add(reset.With(new Thickness(0, 0, 0, 22)));
         }
         if (bit is null) return;
+        if (ClickLocked(selected))
+        {
+            panel.Children.Add(ClickWarning().With(new Thickness(0, 0, 8, 22)));
+            return;
+        }
 
         // Assignment picker
-        panel.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 8)));
+        panel.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
+        panel.Children.Add(Ui.Text($"Drag an action onto a button on the mouse, or right-click it to assign it to {selected.Label}.", "Body", size: 12, wrap: true).With(new Thickness(0, 0, 8, 8)));
         Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
         string current = bindings.GetValueOrDefault(bit.Value) ?? "";
         string key = selected.Id + (diagram.ShiftLayer ? "/shift" : "");
@@ -445,13 +468,27 @@ internal sealed class AssignmentsPage : UserControl, IPage
             Style = Ui.Style("Row"), Content = content, IsChecked = isCurrent, GroupName = "Assignment",
             Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(0, 0, 8, 1), ToolTip = tooltip
         };
-        row.Click += (_, _) =>
+        MakeDraggable(row, id, isCurrent);
+        row.ContextMenu = AssignMenu(id, isCurrent, bit);
+        return row;
+    }
+
+    /// <summary>Right-click menu on an option row: the other deliberate way to assign it, to the selected control.</summary>
+    private ContextMenu AssignMenu(string id, bool isCurrent, int bit)
+    {
+        MenuItem assign = new()
         {
-            service.Assign(diagram.ShiftLayer, bit, id);
+            Header = isCurrent ? $"Already assigned to {selected.Label}" : $"Assign to {selected.Label}",
+            Icon = Ui.Glyph("", 12),
+            IsEnabled = !isCurrent
+        };
+        assign.Click += (_, _) =>
+        {
+            if (!service.Assign(diagram.ShiftLayer, bit, id)) return; // The service already explained why.
+            shell.ShowToast($"{selected.Label} → {service.Settings.DescribeAssignment(id)}");
             Refresh();
         };
-        MakeDraggable(row, id);
-        return row;
+        return new ContextMenu { Items = { assign } };
     }
 
     private RadioButton OptionRow(string id, bool isCurrent, string name, string subtitle, int bit, MacroDefinition? macro = null)
@@ -481,12 +518,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
             content.Children.Add(edit);
         }
         RadioButton row = new() { Style = Ui.Style("Row"), Content = content, IsChecked = isCurrent, GroupName = "Assignment", Margin = new Thickness(0, 0, 8, 2) };
-        row.Click += (_, _) =>
-        {
-            service.Assign(diagram.ShiftLayer, bit, id);
-            Refresh();
-        };
-        MakeDraggable(row, id);
+        MakeDraggable(row, id, isCurrent);
+        row.ContextMenu = AssignMenu(id, isCurrent, bit);
         return row;
     }
 
@@ -575,6 +608,33 @@ internal sealed class AssignmentsPage : UserControl, IPage
         MacroMode.Toggle => "Toggle",
         _ => "Sequence"
     };
+
+    // ── Click lock ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Left or right click on the Default layer that hasn't been unlocked yet. The G-Shift layer isn't locked:
+    /// letting go of G-Shift always brings the normal click back.
+    /// </summary>
+    private bool ClickLocked(MouseControl control) =>
+        control.Id is "G1" or "G2" && !diagram.ShiftLayer && !unlockedClicks.Contains(control.Id);
+
+    private Border ClickWarning()
+    {
+        string click = selected.DefaultAction.ToLowerInvariant();
+        string undo = selected.Id == "G1"
+            ? "right-click Primary click on the diagram and choose Reset to default"
+            : "select Secondary click and pick Secondary Click under System";
+        StackPanel content = new();
+        content.Children.Add(Ui.Row(10, Ui.Glyph("", 16, "Warning"), Ui.Text($"Reassign {click}?", bold: true, color: "Warning")));
+        content.Children.Add(Ui.Text(
+            $"{selected.Label} stops sending {click} as soon as you pick something else, everywhere in Windows. "
+            + $"To get it back, {undo}.",
+            "Body", size: 12, wrap: true).With(new Thickness(26, 4, 0, 10)));
+        Button unlock = Ui.Button("Change anyway", () => { unlockedClicks.Add(selected.Id); RenderPanel(); }, "Btn");
+        unlock.HorizontalAlignment = HorizontalAlignment.Left;
+        content.Children.Add(unlock.With(new Thickness(26, 0, 0, 0)));
+        return new Border { Background = Ui.Brush("WarningDim"), CornerRadius = new CornerRadius(10), Padding = new Thickness(14), Child = content };
+    }
 
     // ── Calibration ───────────────────────────────────────────────────────────
 

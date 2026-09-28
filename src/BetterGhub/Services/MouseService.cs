@@ -111,7 +111,23 @@ internal sealed class MouseService : IDisposable
     {
         try { Settings.Save(); }
         catch (Exception error) { Write("Could not save settings: " + error.Message); }
-        if (IsOnboard) ScheduleOnboardWrite();
+        if (IsOnboard)
+        {
+            SnapToOnboardSpeeds(ActiveProfile);
+            ScheduleOnboardWrite();
+        }
+    }
+
+    /// <summary>
+    /// An on-board slot stores DPI Shift and the current speed as positions in its speed list, so both snap
+    /// to the closest speed (e.g. Restore default speeds' 100 DPI shift becomes 200).
+    /// </summary>
+    private static void SnapToOnboardSpeeds(MouseProfile profile)
+    {
+        List<int> stages = profile.DpiStages.Where(d => d is >= 100 and <= 25600).Distinct().Take(5).ToList();
+        if (stages.Count == 0) return;
+        profile.ShiftDpi = stages.MinBy(s => Math.Abs(s - profile.ShiftDpi));
+        profile.Dpi = stages.MinBy(s => Math.Abs(s - profile.Dpi));
     }
 
     public void ExportSettings(string path)
@@ -532,7 +548,7 @@ internal sealed class MouseService : IDisposable
 
     public void SendDpi(int dpi)
     {
-        if (State != ConnectionState.Connected || IsOnboard) return; // On-board, the slot's own DPI applies.
+        if (State != ConnectionState.Connected) return; // Also applies on-board, straight away; the slot write follows.
         try { bridge.SetDpi(dpi); }
         catch (Exception error) { Write(error.Message); }
     }
@@ -730,8 +746,6 @@ internal sealed class MouseService : IDisposable
         if (stages.Count == 0) stages = [edited.Dpi];
         int Nearest(int dpi) => stages.IndexOf(stages.MinBy(s => Math.Abs(s - dpi)));
         int shiftIndex = Nearest(edited.ShiftDpi);
-        if (stages[shiftIndex] != edited.ShiftDpi)
-            Notice?.Invoke($"On-board memory can only shift to one of the DPI speeds, so DPI Shift uses {stages[shiftIndex]}");
         OnboardEdit edit = new(stored.Name, slot.Enabled, 1000 / Math.Clamp(edited.ReportRate, 125, 1000), stages, Nearest(edited.Dpi), shiftIndex, buttons, shifted);
         try
         {
@@ -783,13 +797,15 @@ internal sealed class MouseService : IDisposable
 
     public void SendReportRate(int hz)
     {
-        if (State != ConnectionState.Connected || IsOnboard) return;
+        if (State != ConnectionState.Connected) return;
         try { bridge.SetReportInterval(1000 / hz); }
         catch (Exception error) { Write(error.Message); }
     }
 
+    /// <summary>Sends the BetterGhub profile's DPI and report rate; on-board, the running slot keeps its own.</summary>
     public void ApplyDeviceSettings()
     {
+        if (IsOnboard) return;
         SendDpi(DpiShiftHeld ? ActiveProfile.ShiftDpi : ActiveProfile.Dpi);
         SendReportRate(ActiveProfile.ReportRate);
     }

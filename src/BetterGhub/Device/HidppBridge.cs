@@ -144,8 +144,14 @@ internal sealed class HidppBridge : IDisposable
                         try
                         {
                             OnboardWriteEvent result = WriteSectors(session, modeIndex, writes);
-                            // Re-select the running slot so the mouse picks up what was just written to it.
-                            if (result.Success && onboardSector != 0 && writes.Any(w => w.Sector == onboardSector)) SetOnboardMode(session, modeIndex, onboardSector);
+                            if (result.Success && onboardSector != 0 && writes.FirstOrDefault(w => w.Sector == onboardSector) is { } running)
+                            {
+                                // Re-select the running slot so it picks up new bindings. That doesn't re-apply its speeds, so when
+                                // the speed list or the default changed, move the mouse onto the new default (setCurrentDpiIndex).
+                                SetOnboardMode(session, modeIndex, onboardSector);
+                                if (!running.Data.AsSpan(1, 12).SequenceEqual(running.Expected.AsSpan(1, 12)))
+                                    session.Call(modeIndex, 12, running.Data[1], 0, 0);
+                            }
                             Emit(result);
                         }
                         catch (HidppErrorException error) { Emit(new OnboardWriteEvent(false, "The mouse refused the write: " + error.Message)); }

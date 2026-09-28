@@ -48,8 +48,10 @@ internal sealed class SensitivityPage : UserControl, IPage
             profile.Dpi = current;
             profile.ShiftDpi = shift;
             service.Save();
-            if (service.DpiShiftHeld) service.SendDpi(shift);
-            else if (currentChanged) service.SendDpi(current);
+            // On-board, Save snaps DPI Shift and the current speed onto the speed list; show where they landed.
+            if (profile.ShiftDpi != shift || profile.Dpi != current) track.Set(profile.DpiStages, profile.Dpi, profile.ShiftDpi);
+            if (service.DpiShiftHeld) service.SendDpi(profile.ShiftDpi);
+            else if (currentChanged) service.SendDpi(profile.Dpi);
             RenderSide();
             RenderTools();
         };
@@ -227,7 +229,7 @@ internal sealed class SensitivityPage : UserControl, IPage
         reset.HorizontalAlignment = HorizontalAlignment.Stretch;
         side.Children.Add(reset);
         side.Children.Add(Ui.Text(service.IsOnboard
-            ? "Saved to this slot in the mouse's on-board memory. DPI Shift uses whichever speed is closest, since the slot can only shift to one of its speeds."
+            ? "Saved to this slot in the mouse's on-board memory. DPI Shift snaps to the closest speed, since the slot can only shift to one of its speeds."
             : "Settings are sent to the mouse's working memory only. On-board slots change only when you run one and edit it.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 12, 0, 0)));
     }
 }
