@@ -40,7 +40,7 @@ public sealed class MouseProfile
     public string Name { get; set; } = "Default";
     public string ApplicationPath { get; set; } = "";
     public int Dpi { get; set; } = 1600;
-    public List<int> DpiStages { get; set; } = [100, 1000, 1600, 2400, 18600];
+    public List<int> DpiStages { get; set; } = [200, 800, 1600, 3000, 6400];
     public int ShiftDpi { get; set; } = 100;
     public int ReportRate { get; set; } = 1000;
     /// <summary>HID bit (or wheel pseudo-bit) to macro id or built-in action id.</summary>

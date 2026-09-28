@@ -22,6 +22,7 @@ internal sealed class MacrosPage : UserControl, IPage
     private MacroDefinition? macro;
     private int selectedStep = -1;
     private WrapPanel? timeline;
+    private Border? dropMarker;
     private StackPanel? inspector;
     private Button? testButton;
     private DispatcherTimer? countdown;
@@ -117,10 +118,101 @@ internal sealed class MacrosPage : UserControl, IPage
             row.Children.Add(text);
             RadioButton button = new() { Style = Ui.Style("Row"), Content = row, IsChecked = item == macro, GroupName = "MacroList", Margin = new Thickness(0, 0, 8, 2) };
             button.Click += (_, _) => Select(item);
+            // Order is only meaningful for the full list, so reordering is off while searching.
+            if (filter.Length == 0) EnableReorder(button);
             list.Children.Add(button);
         }
         if (service.Settings.Macros.Count == 0)
             list.Children.Add(Ui.Text("Nothing here yet.", "Body").With(new Thickness(4)));
+    }
+
+    /// <summary>
+    /// Drag a macro row up or down to reorder. The row follows the cursor and the others slide
+    /// aside to show where it will land; the order is saved on release.
+    /// </summary>
+    private void EnableReorder(RadioButton row)
+    {
+        Point start = default;
+        bool pressed = false, dragging = false;
+        int from = 0, target = 0;
+
+        List<RadioButton> Rows() => list.Children.OfType<RadioButton>().ToList();
+        static TranslateTransform Shift(UIElement element)
+        {
+            if (element.RenderTransform is not TranslateTransform shift) element.RenderTransform = shift = new TranslateTransform();
+            return shift;
+        }
+        void Slide(UIElement element, double y) =>
+            Shift(element).BeginAnimation(TranslateTransform.YProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(y, TimeSpan.FromMilliseconds(140)) { EasingFunction = new System.Windows.Media.Animation.CubicEase() });
+
+        void Reset()
+        {
+            dragging = pressed = false;
+            Panel.SetZIndex(row, 0);
+            row.Opacity = 1;
+            foreach (RadioButton other in Rows())
+            {
+                Shift(other).BeginAnimation(TranslateTransform.YProperty, null);
+                Shift(other).Y = 0;
+            }
+        }
+
+        row.PreviewMouseLeftButtonDown += (_, e) => { start = e.GetPosition(list); pressed = true; };
+        row.PreviewMouseMove += (_, e) =>
+        {
+            if (!pressed || e.LeftButton != System.Windows.Input.MouseButtonState.Pressed) { if (dragging) Reset(); pressed = false; return; }
+            double delta = e.GetPosition(list).Y - start.Y;
+            List<RadioButton> rows = Rows();
+            if (!dragging)
+            {
+                if (Math.Abs(delta) < SystemParameters.MinimumVerticalDragDistance || rows.Count < 2) return;
+                dragging = true;
+                from = target = rows.IndexOf(row);
+                Panel.SetZIndex(row, 1);
+                row.Opacity = 0.92;
+                if (!row.IsMouseCaptured) row.CaptureMouse();
+            }
+            // Clamp so the row can't leave the list.
+            double top = VisualTreeHelper.GetOffset(row).Y;
+            double firstTop = VisualTreeHelper.GetOffset(rows[0]).Y, lastTop = VisualTreeHelper.GetOffset(rows[^1]).Y;
+            delta = Math.Clamp(delta, firstTop - top, lastTop - top);
+            Shift(row).BeginAnimation(TranslateTransform.YProperty, null);
+            Shift(row).Y = delta;
+
+            double center = top + delta + row.ActualHeight / 2;
+            target = rows.Count - 1;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                double slotTop = VisualTreeHelper.GetOffset(rows[i]).Y;
+                if (center < slotTop + rows[i].ActualHeight + rows[i].Margin.Bottom) { target = i; break; }
+            }
+            double pitch = row.ActualHeight + row.Margin.Bottom;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (i == from) continue;
+                double y = from < target && i > from && i <= target ? -pitch
+                    : target < from && i >= target && i < from ? pitch : 0;
+                if (Shift(rows[i]).Y != y) Slide(rows[i], y);
+            }
+        };
+        row.PreviewMouseLeftButtonUp += (_, e) =>
+        {
+            pressed = false;
+            if (!dragging) return;
+            // Handled here so the release doesn't also count as a click that selects the row.
+            e.Handled = true;
+            int to = target;
+            Reset();
+            row.ReleaseMouseCapture();
+            if (to == from) return;
+            MacroDefinition moved = service.Settings.Macros[from];
+            service.Settings.Macros.RemoveAt(from);
+            service.Settings.Macros.Insert(to, moved);
+            service.Save();
+            RenderList();
+        };
+        row.LostMouseCapture += (_, _) => { if (dragging) Reset(); };
     }
 
     private List<string> UsesOf(MacroDefinition item)
@@ -256,9 +348,12 @@ internal sealed class MacrosPage : UserControl, IPage
 
         Border lane = new() { Background = Ui.Brush("Bg"), CornerRadius = new CornerRadius(12), Padding = new Thickness(14, 12, 14, 6), MinHeight = 110 };
         timeline = new WrapPanel();
-        lane.Child = timeline;
+        // Overlay for the insertion bar shown while dragging a chip.
+        dropMarker = new Border { Width = 3, CornerRadius = new CornerRadius(1.5), Background = Ui.Brush("Accent"), Visibility = Visibility.Collapsed };
+        Canvas overlay = new() { IsHitTestVisible = false, Children = { dropMarker } };
+        lane.Child = new Grid { Children = { timeline, overlay } };
         editor.Children.Add(lane);
-        editor.Children.Add(Ui.Text("Click an action to edit it. New actions are added after the selected one.", "Body", size: 12).With(new Thickness(2, 8, 0, 0)));
+        editor.Children.Add(Ui.Text("Click an action to edit it, or drag it to move it. New actions are added after the selected one.", "Body", size: 12).With(new Thickness(2, 8, 0, 0)));
 
         inspector = new StackPanel { Margin = new Thickness(0, 18, 0, 0) };
         editor.Children.Add(inspector);
@@ -317,8 +412,8 @@ internal sealed class MacrosPage : UserControl, IPage
         {
             int index = i;
             MacroStep step = macro.Steps[i];
-            timeline.Children.Add(StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, index == selectedStep,
-                faded: standard && step.Kind == ActionKind.Delay));
+            timeline.Children.Add(EnableStepDrag(StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, index == selectedStep,
+                faded: standard && step.Kind == ActionKind.Delay)));
         }
         timeline.Children.Add(AddTile());
         RenderInspector();
@@ -571,8 +666,109 @@ internal sealed class MacrosPage : UserControl, IPage
         MacroStep step = macro.Steps[index];
         // UIElementCollection's indexer setter throws if the slot is occupied, so swap via remove + insert.
         timeline.Children.RemoveAt(index);
-        timeline.Children.Insert(index, StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, true,
-            faded: macro.StandardDelayMs.HasValue && step.Kind == ActionKind.Delay));
+        timeline.Children.Insert(index, EnableStepDrag(StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, true,
+            faded: macro.StandardDelayMs.HasValue && step.Kind == ActionKind.Delay)));
+    }
+
+    /// <summary>
+    /// Drag a timeline chip to move it. The chip follows the cursor and an accent bar marks where it
+    /// will be inserted; the timeline wraps with uneven chip widths, so a bar reads better than reflowing.
+    /// </summary>
+    private FrameworkElement EnableStepDrag(FrameworkElement chip)
+    {
+        Point start = default;
+        bool pressed = false, dragging = false;
+        int from = 0, slot = 0;
+        TranslateTransform follow = new();
+        chip.RenderTransform = follow;
+        double restingOpacity = chip.Opacity; // Delay chips are faded under a standard delay.
+
+        void End()
+        {
+            dragging = pressed = false;
+            follow.X = follow.Y = 0;
+            Panel.SetZIndex(chip, 0);
+            chip.Opacity = restingOpacity;
+            if (dropMarker is not null) dropMarker.Visibility = Visibility.Collapsed;
+        }
+
+        chip.PreviewMouseLeftButtonDown += (_, e) => { if (timeline is not null) { start = e.GetPosition(timeline); pressed = true; } };
+        chip.PreviewMouseMove += (_, e) =>
+        {
+            if (timeline is null || macro is null || !pressed) return;
+            if (e.LeftButton != System.Windows.Input.MouseButtonState.Pressed) { End(); chip.ReleaseMouseCapture(); return; }
+            Point at = e.GetPosition(timeline);
+            if (!dragging)
+            {
+                if (Math.Abs(at.X - start.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(at.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+                from = timeline.Children.IndexOf(chip);
+                if (from < 0 || macro.Steps.Count < 2) { pressed = false; return; }
+                dragging = true;
+                Panel.SetZIndex(chip, 1);
+                chip.Opacity = 0.85;
+                chip.CaptureMouse();
+            }
+            follow.X = at.X - start.X;
+            follow.Y = at.Y - start.Y;
+            slot = DropSlot(at, out Rect bar);
+            bool moves = slot != from && slot != from + 1;
+            if (dropMarker is null) return;
+            dropMarker.Visibility = moves ? Visibility.Visible : Visibility.Collapsed;
+            Canvas.SetLeft(dropMarker, bar.X - dropMarker.Width / 2);
+            Canvas.SetTop(dropMarker, bar.Y);
+            dropMarker.Height = bar.Height;
+        };
+        chip.PreviewMouseLeftButtonUp += (_, e) =>
+        {
+            pressed = false;
+            if (!dragging) return;
+            // Handled here so the release doesn't also count as a click on the chip.
+            e.Handled = true;
+            int target = slot;
+            End();
+            chip.ReleaseMouseCapture();
+            if (macro is null || target == from || target == from + 1) return;
+            MacroStep step = macro.Steps[from];
+            macro.Steps.RemoveAt(from);
+            int to = target > from ? target - 1 : target;
+            macro.Steps.Insert(to, step);
+            selectedStep = to;
+            service.Save();
+            RenderTimeline();
+        };
+        chip.LostMouseCapture += (_, _) => { if (dragging) End(); };
+        return chip;
+    }
+
+    /// <summary>
+    /// The insertion index (0…steps) nearest <paramref name="at"/>, and where to draw the bar for it,
+    /// both in timeline coordinates. Chips are grouped into the wrap panel's visual lines.
+    /// </summary>
+    private int DropSlot(Point at, out Rect bar)
+    {
+        List<(int Index, Rect Box)> chips = [];
+        for (int i = 0; i < macro!.Steps.Count && i < timeline!.Children.Count; i++)
+        {
+            FrameworkElement child = (FrameworkElement)timeline.Children[i];
+            Vector offset = VisualTreeHelper.GetOffset(child);
+            chips.Add((i, new Rect(offset.X, offset.Y, child.ActualWidth, child.ActualHeight)));
+        }
+        // Pick the line whose vertical span is nearest the cursor.
+        double lineTop = chips.Select(c => c.Box.Top).Distinct()
+            .MinBy(top => chips.Where(c => c.Box.Top == top).Select(c => at.Y < c.Box.Top ? c.Box.Top - at.Y : at.Y > c.Box.Bottom ? at.Y - c.Box.Bottom : 0).Min());
+        List<(int Index, Rect Box)> line = chips.Where(c => c.Box.Top == lineTop).ToList();
+        double height = line.Max(c => c.Box.Height);
+        foreach ((int index, Rect box) in line)
+        {
+            if (at.X < box.Left + box.Width / 2)
+            {
+                bar = new Rect(box.Left - 3, lineTop + 4, 0, height - 8);
+                return index;
+            }
+        }
+        Rect last = line[^1].Box;
+        bar = new Rect(last.Right + 3, lineTop + 4, 0, height - 8);
+        return line[^1].Index + 1;
     }
 
     private void Move(int delta)

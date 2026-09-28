@@ -4,6 +4,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Automation;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using BetterGhub.Core;
 using BetterGhub.Input;
@@ -149,7 +150,73 @@ public partial class MainWindow : Window
         else service.Connect();
     }
 
+    // The profile menu is opened and closed here rather than with StaysOpen="False": that closes the
+    // popup on mouse-down, so the same click on the toggle reopened it, and it can't animate closing.
+    private bool profileMenuClosing;
+
     private void ProfileToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (ProfileToggle.IsChecked == true) OpenProfileMenu();
+        else CloseProfileMenu();
+    }
+
+    private void OpenProfileMenu()
+    {
+        BuildProfileList();
+        profileMenuClosing = false;
+        ProfileToggle.IsChecked = true;
+        if (!ProfilePopup.IsOpen)
+        {
+            ProfileMenu.BeginAnimation(OpacityProperty, null);
+            ProfileMenuSlide.BeginAnimation(TranslateTransform.YProperty, null);
+            ProfileMenu.Opacity = 0;
+            ProfileMenuSlide.Y = -8;
+            ProfilePopup.IsOpen = true;
+        }
+        AnimateProfileMenu(1, 0, TimeSpan.FromMilliseconds(170), new CubicEase { EasingMode = EasingMode.EaseOut }, null);
+    }
+
+    private void CloseProfileMenu()
+    {
+        ProfileToggle.IsChecked = false;
+        if (!ProfilePopup.IsOpen || profileMenuClosing) return;
+        profileMenuClosing = true;
+        AnimateProfileMenu(0, -8, TimeSpan.FromMilliseconds(120), new CubicEase { EasingMode = EasingMode.EaseIn }, () =>
+        {
+            if (!profileMenuClosing) return; // Reopened mid-animation.
+            profileMenuClosing = false;
+            ProfilePopup.IsOpen = false;
+        });
+    }
+
+    private void AnimateProfileMenu(double opacity, double offset, TimeSpan duration, IEasingFunction ease, Action? completed)
+    {
+        DoubleAnimation fade = new(opacity, duration) { EasingFunction = ease };
+        if (completed is not null) fade.Completed += (_, _) => completed();
+        ProfileMenu.BeginAnimation(OpacityProperty, fade);
+        ProfileMenuSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(offset, duration) { EasingFunction = ease });
+    }
+
+    protected override void OnPreviewMouseDown(System.Windows.Input.MouseButtonEventArgs e)
+    {
+        // Clicks inside the popup land in its own window, so anything seen here is outside it.
+        if (ProfilePopup.IsOpen && !ProfileToggle.IsMouseOver) CloseProfileMenu();
+        base.OnPreviewMouseDown(e);
+    }
+
+    protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Escape && ProfilePopup.IsOpen) { CloseProfileMenu(); e.Handled = true; }
+        base.OnPreviewKeyDown(e);
+    }
+
+    protected override void OnDeactivated(EventArgs e)
+    {
+        CloseProfileMenu();
+        base.OnDeactivated(e);
+    }
+
+    private void BuildProfileList()
     {
         ProfileList.Children.Clear();
         foreach (MouseProfile profile in service.Settings.Profiles)
@@ -161,13 +228,12 @@ public partial class MainWindow : Window
                 Content = ProfileRow(profile),
                 GroupName = "ProfilePick"
             };
-            row.Click += (_, _) => { service.SelectProfile(profile); ProfilePopup.IsOpen = false; };
+            row.Click += (_, _) => { service.SelectProfile(profile); CloseProfileMenu(); };
             ProfileList.Children.Add(row);
         }
         Button manage = new() { Style = (Style)FindResource("GhostBtn"), Content = "Manage profiles…", HorizontalContentAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
-        manage.Click += (_, _) => { ProfilePopup.IsOpen = false; Navigate("Profiles"); };
+        manage.Click += (_, _) => { CloseProfileMenu(); Navigate("Profiles"); };
         ProfileList.Children.Add(manage);
-        ProfilePopup.IsOpen = ProfileToggle.IsChecked == true;
     }
 
     private static FrameworkElement ProfileRow(MouseProfile profile)
@@ -177,8 +243,6 @@ public partial class MainWindow : Window
         row.Children.Add(new TextBlock { Text = profile.Name, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         return row;
     }
-
-    private void ProfilePopupClosed(object? sender, EventArgs e) => ProfileToggle.IsChecked = false;
 
     internal void ShowToast(string text)
     {

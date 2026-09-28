@@ -172,7 +172,7 @@ internal sealed class MouseDiagram : Viewbox
             }
             StackPanel titleRow = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = left ? HorizontalAlignment.Left : HorizontalAlignment.Right };
             if (isMacro) titleRow.Children.Add(Ui.MacroMark().With(new Thickness(0, 0, 8, 0)));
-            else if (assigned is not null) titleRow.Children.Add(Ui.Glyph("", 12, "Accent").With(new Thickness(0, 0, 7, 0)));
+            else if (assigned is not null) titleRow.Children.Add(Ui.Glyph("\uE8AB", 12, "Accent").With(new Thickness(0, 0, 7, 0)));
             titleRow.Children.Add(title);
             overline.HorizontalAlignment = titleRow.HorizontalAlignment;
             label.Child = new StackPanel { Children = { overline, titleRow } };

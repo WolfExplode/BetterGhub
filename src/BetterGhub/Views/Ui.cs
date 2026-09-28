@@ -104,12 +104,16 @@ internal static class Ui
             Child = new TextBlock { Text = text, Foreground = Brush(foreground), FontSize = 10.5, FontWeight = FontWeights.Bold }
         };
 
-    /// <summary>A small square "M" marker used wherever a macro is referenced.</summary>
+    /// <summary>A small square lightning-bolt marker (the Macros nav icon) used wherever a macro is referenced.</summary>
     public static Border MacroMark() =>
         new()
         {
             Width = 18, Height = 18, CornerRadius = new CornerRadius(4), Background = Brush("Hover"), VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock { Text = "M", FontSize = 11, FontWeight = FontWeights.Bold, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("Text") }
+            Child = new TextBlock
+            {
+                Text = "", FontFamily = Font("Icons"), FontSize = 11,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("Accent")
+            }
         };
 
     /// <summary>Wraps a text box with a search glyph and placeholder text.</summary>

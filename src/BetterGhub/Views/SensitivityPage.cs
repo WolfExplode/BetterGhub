@@ -144,6 +144,16 @@ internal sealed class SensitivityPage : UserControl, IPage
         RenderTools();
     }
 
+    private void SetCurrent(int dpi)
+    {
+        MouseProfile profile = service.ActiveProfile;
+        profile.Dpi = dpi;
+        service.Save();
+        service.SendDpi(dpi);
+        track.Set(profile.DpiStages, profile.Dpi, profile.ShiftDpi);
+        RenderSide();
+    }
+
     private void RenderSide()
     {
         side.Children.Clear();
@@ -160,12 +170,20 @@ internal sealed class SensitivityPage : UserControl, IPage
             {
                 Text = value.ToString(), FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 16, 4),
                 Foreground = new SolidColorBrush(DpiTrack.StageColors[i % DpiTrack.StageColors.Length]),
-                TextDecorations = value == profile.Dpi ? TextDecorations.Underline : null
+                TextDecorations = value == profile.Dpi ? TextDecorations.Underline : null,
+                Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand,
+                ToolTip = value == profile.Dpi ? "Current speed" : $"Switch to {value} DPI", Opacity = value == profile.Dpi ? 1 : 0.8
             };
+            if (value != profile.Dpi)
+            {
+                number.MouseEnter += (_, _) => number.Opacity = 1;
+                number.MouseLeave += (_, _) => number.Opacity = 0.8;
+                number.MouseLeftButtonUp += (_, _) => SetCurrent(value);
+            }
             speeds.Children.Add(number);
         }
         side.Children.Add(speeds);
-        side.Children.Add(Ui.Text("The underlined speed is current.", "Body", size: 12).With(new Thickness(0, 2, 0, 18)));
+        side.Children.Add(Ui.Text("The underlined speed is current. Click a speed to switch to it.", "Body", size: 12).With(new Thickness(0, 2, 0, 18)));
 
         side.Children.Add(Ui.Text("DPI SHIFT", "Overline"));
         side.Children.Add(Ui.Text($"{profile.ShiftDpi} DPI while held", size: 15, bold: true));

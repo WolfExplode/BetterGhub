@@ -70,8 +70,27 @@ internal sealed class AssignmentsPage : UserControl, IPage
         topView.Checked += (_, _) => SetView(MouseView.Top);
         sideView.Checked += (_, _) => SetView(MouseView.Side);
         Border views = new() { Style = Ui.Style("SegmentHost"), HorizontalAlignment = HorizontalAlignment.Center, Child = Ui.Row(2, topView, sideView) };
-        Grid.SetRow(views, 2);
-        stage.Children.Add(views);
+
+        // Layer switch under the view toggle, like G HUB: DEFAULT ◯— G-SHIFT
+        TextBlock defaultLabel = Ui.Text("DEFAULT", size: 12.5, bold: true);
+        TextBlock shiftLabel = Ui.Text("G-SHIFT", size: 12.5, bold: true);
+        CheckBox layerSwitch = new() { Style = Ui.Style("Switch"), VerticalAlignment = VerticalAlignment.Center, ToolTip = "Edit what buttons do while G-Shift is held" };
+        void ShowLayer()
+        {
+            defaultLabel.Foreground = Ui.Brush(diagram.ShiftLayer ? "Faint" : "Text");
+            shiftLabel.Foreground = Ui.Brush(diagram.ShiftLayer ? "Text" : "Faint");
+        }
+        layerSwitch.Click += (_, _) => { diagram.ShiftLayer = layerSwitch.IsChecked == true; ShowLayer(); Refresh(); };
+        ShowLayer();
+        defaultLabel.VerticalAlignment = shiftLabel.VerticalAlignment = VerticalAlignment.Center;
+        // The switch template leaves a 12px gap for content it doesn't have here.
+        StackPanel layers = Ui.Row(10, defaultLabel, layerSwitch, shiftLabel.With(new Thickness(-12, 0, 0, 0)));
+        layers.HorizontalAlignment = HorizontalAlignment.Center;
+        layers.Margin = new Thickness(0, 14, 0, 0);
+
+        StackPanel bottom = new() { Children = { views, layers } };
+        Grid.SetRow(bottom, 2);
+        stage.Children.Add(bottom);
 
         Content = layout;
 
@@ -98,9 +117,6 @@ internal sealed class AssignmentsPage : UserControl, IPage
             : Ui.Button("Calibrate buttons", () => SetCalibrating(true), "Btn", "", "Click a control, then press it on the mouse");
         DockPanel.SetDock(toggle, Dock.Right);
         toolbar.Children.Add(toggle);
-        toolbar.Children.Add(Ui.Text(calibrating
-            ? "Calibrating. Pick a control, then press that button on your mouse."
-            : "Click a control or drag an action onto it. Right-click to reset.", "Body", color: calibrating ? "Warning" : null).With(new Thickness(2, 8, 0, 0)));
     }
 
     private void OnButton(int bit, bool down)
@@ -142,7 +158,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     }
 
     /// <summary>Lets an option row be dragged onto a control in the diagram to assign it.</summary>
-    private static void MakeDraggable(RadioButton row, string id)
+    private void MakeDraggable(RadioButton row, string id)
     {
         Point? start = null;
         row.PreviewMouseLeftButtonDown += (_, e) => start = e.GetPosition(row);
@@ -154,9 +170,43 @@ internal sealed class AssignmentsPage : UserControl, IPage
             start = null;
             // Release the button's capture so the drop doesn't also count as a click on the row.
             row.ReleaseMouseCapture();
-            DragDrop.DoDragDrop(row, new DataObject(MouseDiagram.DragFormat, id), DragDropEffects.Copy);
+
+            // OLE drag-and-drop draws nothing, so float a chip beside the cursor. It sits off the
+            // hotspot because the popup is its own window and would otherwise swallow the drop.
+            System.Windows.Controls.Primitives.Popup ghost = new()
+            {
+                AllowsTransparency = true, IsHitTestVisible = false,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Absolute,
+                Child = new Border
+                {
+                    Background = Ui.Brush("Surface2"), BorderBrush = Ui.Brush("Accent"), BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 6, 12, 6), Opacity = 0.95,
+                    Child = Ui.Row(8, Ui.Glyph("", 12, "Accent"), Ui.Text(service.Settings.DescribeAssignment(id), bold: true))
+                }
+            };
+            Matrix toDip = PresentationSource.FromVisual(row)?.CompositionTarget.TransformFromDevice ?? Matrix.Identity;
+            void Follow()
+            {
+                if (!GetCursorPos(out CursorPoint cursor)) return;
+                Point at = toDip.Transform(new Point(cursor.X, cursor.Y));
+                ghost.HorizontalOffset = at.X + 16;
+                ghost.VerticalOffset = at.Y + 14;
+            }
+            GiveFeedbackEventHandler feedback = (_, _) => Follow();
+            row.GiveFeedback += feedback;
+            Follow();
+            ghost.IsOpen = true;
+            try { DragDrop.DoDragDrop(row, new DataObject(MouseDiagram.DragFormat, id), DragDropEffects.Copy); }
+            finally
+            {
+                ghost.IsOpen = false;
+                row.GiveFeedback -= feedback;
+            }
         };
     }
+
+    private struct CursorPoint { public int X, Y; }
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool GetCursorPos(out CursorPoint point);
 
     internal void SelectControl(string id)
     {
@@ -186,41 +236,30 @@ internal sealed class AssignmentsPage : UserControl, IPage
         MouseProfile profile = service.ActiveProfile;
         int? bit = service.Settings.BitFor(selected);
 
-        // Layer
-        panel.Children.Add(Ui.Text("LAYER", "Overline"));
-        RadioButton normal = new() { Content = "Default", Style = Ui.Style("Segment"), GroupName = "Layer", IsChecked = !diagram.ShiftLayer };
-        RadioButton shifted = new() { Content = "G-Shift", Style = Ui.Style("Segment"), GroupName = "Layer", IsChecked = diagram.ShiftLayer };
-        normal.Checked += (_, _) => { diagram.ShiftLayer = false; Refresh(); };
-        shifted.Checked += (_, _) => { diagram.ShiftLayer = true; Refresh(); };
-        panel.Children.Add(new Border { Style = Ui.Style("SegmentHost"), Child = Ui.Row(2, normal, shifted), Margin = new Thickness(0, 0, 0, 6) });
         if (diagram.ShiftLayer)
             panel.Children.Add(Ui.Text(
                 profile.Assignments.ContainsValue(BuiltinActions.GShift)
-                    ? "These actions apply while the G-Shift button is held."
-                    : "Assign G-Shift to a button on the Default layer to use this layer.", "Body", size: 12));
+                    ? "Editing the G-Shift layer. These actions apply while the G-Shift button is held."
+                    : "Editing the G-Shift layer. Assign G-Shift to a button on the Default layer to use it.",
+                "Body", size: 12, color: "Accent", wrap: true).With(new Thickness(0, 0, 8, 16)));
 
-        // Selected control
-        panel.Children.Add(new Border { Height = 1, Background = Ui.Brush("Line"), Margin = new Thickness(0, 16, 8, 16) });
-        panel.Children.Add(Ui.Text(selected.Label, "H2"));
-        string detail = bit is int b
-            ? (selected.IsWheel ? $"Wheel · default {selected.DefaultAction.ToLowerInvariant()}" : $"HID 0x{b:x4} · default {selected.DefaultAction.ToLowerInvariant()}")
-            : "Not calibrated yet. Use Calibrate buttons to set it.";
-        panel.Children.Add(Ui.Text(detail, "Body", size: 12, color: bit is null ? "Warning" : "Muted", wrap: true).With(new Thickness(0, 3, 0, 12)));
+        if (bit is null && service.Learning?.Id != selected.Id)
+            panel.Children.Add(Ui.Text($"{selected.Label} isn't calibrated yet. Use Calibrate buttons to set it.", "Body", size: 12, color: "Warning", wrap: true).With(new Thickness(0, 0, 8, 12)));
 
         if (service.Learning?.Id == selected.Id)
         {
-            panel.Children.Add(LearningBox());
+            panel.Children.Add(LearningBox().With(new Thickness(0, 0, 8, 22)));
         }
         else if (calibrating && service.Settings.ControlBits.ContainsKey(selected.Id))
         {
-            Button reset = Ui.Button("Reset to default", () => { service.ForgetCalibration(selected); Refresh(); }, "GhostBtn");
+            Button reset = Ui.Button($"Reset {selected.Label} calibration", () => { service.ForgetCalibration(selected); Refresh(); }, "GhostBtn");
             reset.HorizontalAlignment = HorizontalAlignment.Left;
-            panel.Children.Add(reset);
+            panel.Children.Add(reset.With(new Thickness(0, 0, 0, 22)));
         }
         if (bit is null) return;
 
         // Assignment picker
-        panel.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 22, 0, 8)));
+        panel.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 8)));
         Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
         string current = bindings.GetValueOrDefault(bit.Value) ?? "";
         string key = selected.Id + (diagram.ShiftLayer ? "/shift" : "");
@@ -235,7 +274,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         foreach (string name in Tabs)
         {
             RadioButton item = new() { Content = name.ToUpperInvariant(), Style = Ui.Style("TextTab"), GroupName = "AssignTab", IsChecked = tab == name };
-            item.Checked += (_, _) => { if (tab == name) return; tab = name; search = ""; RenderPanel(); };
+            item.Checked += (_, _) => { if (tab == name) return; tab = name; RenderPanel(); };
             tabs.Children.Add(item);
         }
         panel.Children.Add(tabs);
@@ -441,7 +480,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         FrameworkElement icon = macro is not null ? Ui.MacroMark()
-            : Ui.Glyph("", 13, "Accent");
+            : Ui.Glyph("\uE8AB", 13, "Accent");
         icon.Margin = new Thickness(0, 0, 12, 0);
         icon.VerticalAlignment = VerticalAlignment.Center;
         icon.Width = 18;

@@ -106,9 +106,12 @@
                         </DockPanel>
                     </ToggleButton>
                     <Popup x:Name="ProfilePopup" PlacementTarget="{Binding ElementName=ProfileToggle}" Placement="Bottom" VerticalOffset="6"
-                           StaysOpen="False" AllowsTransparency="True" Closed="ProfilePopupClosed">
-                        <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource LineStrong}" BorderThickness="1" CornerRadius="10"
+                           StaysOpen="True" AllowsTransparency="True">
+                        <Border x:Name="ProfileMenu" Background="{StaticResource Surface}" BorderBrush="{StaticResource LineStrong}" BorderThickness="1" CornerRadius="10"
                                 Padding="6" MinWidth="{Binding ActualWidth, ElementName=ProfileToggle}">
+                            <Border.RenderTransform>
+                                <TranslateTransform x:Name="ProfileMenuSlide"/>
+                            </Border.RenderTransform>
                             <StackPanel x:Name="ProfileList"/>
                         </Border>
                     </Popup>
