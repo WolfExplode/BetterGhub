@@ -48,18 +48,24 @@ internal sealed class SensitivityPage : UserControl, IPage
             profile.Dpi = current;
             profile.ShiftDpi = shift;
             service.Save();
-            if (currentChanged) service.SendDpi(current);
+            if (service.DpiShiftHeld) service.SendDpi(shift);
+            else if (currentChanged) service.SendDpi(current);
             RenderSide();
             RenderTools();
         };
         track.SelectionChanged += _ => RenderTools();
-        service.StateChanged += () => { if (IsLoaded) RenderDeviceLine(); };
+        service.StateChanged += () =>
+        {
+            track.ShiftActive = service.DpiShiftHeld;
+            if (IsLoaded) RenderDeviceLine();
+        };
         Refresh();
     }
 
     public void Refresh()
     {
         MouseProfile profile = service.ActiveProfile;
+        track.ShiftActive = service.DpiShiftHeld;
         track.Set(profile.DpiStages, profile.Dpi, profile.ShiftDpi);
         RenderSide();
         RenderTools();

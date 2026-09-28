@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace BetterGhub.Input;
 
 /// <summary>
-/// Optional low-level hook that blocks the normal Windows action of a standard mouse input.
+/// Low-level hook that blocks the normal Windows action of a standard mouse input.
 /// It sees every mouse on the system, so the callback decides per physical control id
 /// (see <see cref="Core.MouseControls"/>): G2 right, G3 middle, G4 back (X1), G5 forward (X2), wheel and tilt.
 /// </summary>

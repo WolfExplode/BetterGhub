@@ -292,25 +292,6 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
         panel.Children.Add(options);
         RenderOptions(options, bit.Value, current, bindings);
-
-        if (selected.CanBlockDefault && !diagram.ShiftLayer)
-        {
-            panel.Children.Add(new Border { Height = 1, Background = Ui.Brush("Line"), Margin = new Thickness(0, 18, 8, 16) });
-            CheckBox block = new()
-            {
-                Style = Ui.Style("Switch"), IsChecked = service.Settings.SuppressStandardActions,
-                Content = new StackPanel
-                {
-                    Children =
-                    {
-                        Ui.Text("Block Windows' default action", bold: true),
-                        Ui.Text("When a standard button (right, middle, back, forward, wheel) has an assignment, Windows won't also see the original click. Applies to every mouse.", "Body", size: 12).With(new Thickness(0, 3, 0, 0))
-                    }
-                }
-            };
-            block.Click += (_, _) => { service.Settings.SuppressStandardActions = block.IsChecked == true; service.Save(); };
-            panel.Children.Add(block);
-        }
     }
 
     private static readonly string[] Tabs = ["Commands", "Keys", "Macros", "System"];

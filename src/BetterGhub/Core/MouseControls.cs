@@ -13,8 +13,15 @@ public sealed record MouseControl(
     MouseView View, double ImageX, double ImageY, CalloutSide Side, double LabelY)
 {
     public bool IsWheel => DefaultBit is RawMouseWheel.Up or RawMouseWheel.Down;
-    /// <summary>Controls whose default action Windows also sees and that the optional hook can block.</summary>
-    public bool CanBlockDefault => Id is "G2" or "G3" or "G4" or "G5" or "WheelUp" or "WheelDown" or "TiltLeft" or "TiltRight";
+    /// <summary>Default action BetterGhub runs itself, since host mode turns off the mouse's onboard handling of these buttons.</summary>
+    public string? SoftwareDefault => Id switch
+    {
+        "G6" => BuiltinActions.DpiShift,
+        "G7" => BuiltinActions.DpiDown,
+        "G8" => BuiltinActions.DpiUp,
+        "G9" => BuiltinActions.DpiCycle,
+        _ => null
+    };
 }
 
 public static class MouseControls

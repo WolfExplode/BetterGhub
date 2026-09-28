@@ -22,6 +22,7 @@ internal sealed class DpiTrack : Canvas
     private int shift;
     private int? dragging; // stage index, or -1 for the shift diamond
     private int? selectedIndex;
+    private bool shiftActive;
 
     /// <summary>Raised after a drag or click finishes: (stages, current, shift).</summary>
     public event Action<List<int>, int, int>? Changed;
@@ -39,6 +40,18 @@ internal sealed class DpiTrack : Canvas
     }
 
     public int? SelectedIndex => selectedIndex;
+
+    /// <summary>DPI Shift is held, so the shift speed rather than the current stage is in effect.</summary>
+    public bool ShiftActive
+    {
+        get => shiftActive;
+        set
+        {
+            if (shiftActive == value) return;
+            shiftActive = value;
+            Render();
+        }
+    }
 
     public void Set(List<int> values, int currentDpi, int shiftDpi)
     {
@@ -78,14 +91,27 @@ internal sealed class DpiTrack : Canvas
 
         // DPI Shift diamond below the rail
         double sx = X(shift);
+        if (shiftActive)
+        {
+            Rectangle glow = new()
+            {
+                Width = 24, Height = 24, RadiusX = 3, RadiusY = 3, Fill = Ui.Brush("Accent"), Opacity = 0.28,
+                RenderTransform = new RotateTransform(45, 12, 12), IsHitTestVisible = false
+            };
+            Add(glow, sx - 12, TrackY + 44.5);
+        }
         Rectangle diamond = new()
         {
-            Width = 13, Height = 13, Fill = Ui.Brush("Muted"), Stroke = Ui.Brush("Bg"), StrokeThickness = 2,
-            RenderTransform = new RotateTransform(45, 6.5, 6.5), Cursor = Cursors.SizeWE, ToolTip = $"DPI Shift speed: {shift}"
+            Width = 13, Height = 13, Fill = Ui.Brush(shiftActive ? "Accent" : "Muted"), Stroke = Ui.Brush("Bg"), StrokeThickness = 2,
+            RenderTransform = new RotateTransform(45, 6.5, 6.5), Cursor = Cursors.SizeWE, ToolTip = shiftActive ? $"DPI Shift active: {shift}" : $"DPI Shift speed: {shift}"
         };
         diamond.MouseLeftButtonDown += (_, e) => { dragging = -1; CaptureMouse(); e.Handled = true; };
         Add(diamond, sx - 6.5, TrackY + 50);
-        TextBlock shiftLabel = new() { Text = $"SHIFT {shift}", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = Ui.Brush("Muted") };
+        TextBlock shiftLabel = new()
+        {
+            Text = $"SHIFT {shift}", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = Ui.Brush(shiftActive ? "Accent" : "Muted"),
+            TextDecorations = shiftActive ? TextDecorations.Underline : null
+        };
         shiftLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         Add(shiftLabel, sx - shiftLabel.DesiredSize.Width / 2, TrackY + 70);
 
@@ -96,7 +122,7 @@ internal sealed class DpiTrack : Canvas
             int index = i;
             double x = X(stages[i]);
             Color color = StageColors[i % StageColors.Length];
-            bool isCurrent = stages[i] == current;
+            bool isCurrent = stages[i] == current && !shiftActive;
             bool isSelected = selectedIndex == i;
             Ellipse ring = new() { Width = 26, Height = 26, Fill = new SolidColorBrush(Color.FromArgb(isSelected ? (byte)70 : (byte)0, color.R, color.G, color.B)), IsHitTestVisible = false };
             Add(ring, x - 13, TrackY - 13);

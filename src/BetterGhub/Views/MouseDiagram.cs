@@ -149,7 +149,8 @@ internal sealed class MouseDiagram : Viewbox
 
             TextBlock overline = new()
             {
-                Text = control.Label.ToUpperInvariant(), FontSize = 12.5, FontWeight = FontWeights.SemiBold,
+                // Once reassigned, drop the default-action half of labels like "G5 · Forward".
+                Text = (assigned is not null && !owner.CalibrationMode && control.Id.StartsWith('G') ? control.Id : control.Label).ToUpperInvariant(), FontSize = 12.5, FontWeight = FontWeights.SemiBold,
                 FontFamily = Ui.Font("DisplayFont"), Foreground = Ui.Brush("Muted"), Margin = new Thickness(0, 0, 0, 2)
             };
             if (owner.CalibrationMode)

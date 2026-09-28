@@ -45,8 +45,14 @@ internal sealed class HidppBridge : IDisposable
         commands.Clear();
     }
 
-    public void SetDpi(int dpi) => commands.Enqueue(("dpi", dpi));
-    public void SetReportInterval(int milliseconds) => commands.Enqueue(("rate", milliseconds));
+    public void SetDpi(int dpi) => Send("dpi", dpi);
+    public void SetReportInterval(int milliseconds) => Send("rate", milliseconds);
+
+    private void Send(string command, int value)
+    {
+        commands.Enqueue((command, value));
+        current?.Wake(); // Don't wait out the report poll; DPI Shift should apply immediately.
+    }
     public void Dispose() => Stop();
 
     private void Emit(DeviceEvent item) => Event?.Invoke(item);
@@ -106,14 +112,16 @@ internal sealed class HidppBridge : IDisposable
         {
             while (commands.TryDequeue(out (string Command, int Value) command))
             {
+                // Only the latest DPI matters when several are queued (e.g. a quick shift press and release).
+                if (command.Command == "dpi" && commands.Any(x => x.Command == "dpi")) continue;
                 try
                 {
                     if (command.Command == "dpi")
                     {
                         if (dpiIndex == 0 || command.Value is < 100 or > 25600) throw new ArgumentException("DPI unavailable or outside 100–25600");
-                        session.Call(dpiIndex, 3, 0, (byte)(command.Value >> 8), (byte)command.Value);
-                        byte[] payload = session.Call(dpiIndex, 2, 0, 0, 0);
-                        Emit(new DpiEvent((payload[1] << 8) | payload[2]));
+                        byte[] payload = session.Call(dpiIndex, 3, 0, (byte)(command.Value >> 8), (byte)command.Value); // Echoes the DPI set.
+                        int applied = (payload[1] << 8) | payload[2];
+                        Emit(new DpiEvent(applied > 0 ? applied : command.Value));
                     }
                     else
                     {
@@ -127,7 +135,7 @@ internal sealed class HidppBridge : IDisposable
             }
 
             byte[]? report = session.Next(100);
-            if (report is not null) sinceReport.Restart();
+            if (report is { Length: > 0 }) sinceReport.Restart();
             if (report is { Length: >= 6 } && report[0] == 0x11 && report[1] == Slot && report[2] == spyIndex && report[3] == 0)
             {
                 int mask = (report[4] << 8) | report[5];
@@ -239,6 +247,9 @@ internal sealed class HidppBridge : IDisposable
             return reports.TryTake(out byte[]? report, timeoutMs) ? report : null;
         }
 
+        /// <summary>Wakes a pending <see cref="Next"/> so queued commands run now.</summary>
+        public void Wake() => reports.TryAdd([]);
+
         /// <summary>Next unsolicited report (e.g. button spy), or null after the timeout.</summary>
         public byte[]? Next(int timeoutMs) => pending.Count > 0 ? pending.Dequeue() : Take(timeoutMs);
 
@@ -253,6 +264,7 @@ internal sealed class HidppBridge : IDisposable
             {
                 byte[]? reply = Take((int)Math.Max(1, 2000 - clock.ElapsedMilliseconds));
                 if (reply is null) break;
+                if (reply.Length == 0) continue; // Wake signal.
                 if (reply.Length >= 4 && reply[1] == Slot)
                 {
                     if (reply[0] == 0x8F || (reply[0] == 0x10 && reply[2] == 0x8F))

@@ -26,7 +26,6 @@ internal sealed class MouseService : IDisposable
     /// <summary>What to do when a button holding a key or mouse button is released, by trigger bit.</summary>
     private readonly Dictionary<int, Action> heldOutputs = [];
     private MouseHook? hook;
-    private bool dpiShiftHeld;
     private bool disposed;
 
     public Settings Settings { get; }
@@ -35,6 +34,7 @@ internal sealed class MouseService : IDisposable
     public int DeviceDpi { get; private set; }
     public int DeviceIntervalMs { get; private set; }
     public bool GShiftHeld { get; private set; }
+    public bool DpiShiftHeld { get; private set; }
     public MouseControl? Learning { get; private set; }
     public IReadOnlyCollection<int> Pressed => pressed;
     public List<LogEntry> Log { get; } = [];
@@ -145,7 +145,7 @@ internal sealed class MouseService : IDisposable
 
     private void ReleaseAll()
     {
-        dpiShiftHeld = false;
+        DpiShiftHeld = false;
         GShiftHeld = false;
         pressedAssignments.Clear();
         foreach (int bit in heldOutputs.Keys.ToArray()) ReleaseOutput(bit);
@@ -194,7 +194,7 @@ internal sealed class MouseService : IDisposable
         try
         {
             hook = new MouseHook(control =>
-                State == ConnectionState.Connected && Settings.SuppressStandardActions
+                State == ConnectionState.Connected
                 && MouseControls.ById(control) is { } physical && Settings.BitFor(physical) is int bit
                 && !string.IsNullOrEmpty(EffectiveAssignment(bit)));
         }
@@ -271,8 +271,8 @@ internal sealed class MouseService : IDisposable
     public string EffectiveAssignment(int bit)
     {
         MouseProfile profile = ActiveProfile;
-        return GShiftHeld && profile.ShiftAssignments.TryGetValue(bit, out string? shifted)
-            ? shifted : profile.Assignments.GetValueOrDefault(bit) ?? "";
+        return GShiftHeld && profile.ShiftAssignments.TryGetValue(bit, out string? shifted) ? shifted
+            : profile.Assignments.GetValueOrDefault(bit) ?? Settings.ControlFor(bit)?.SoftwareDefault ?? "";
     }
 
     public void Assign(bool shiftLayer, int bit, string? id)
@@ -305,9 +305,10 @@ internal sealed class MouseService : IDisposable
             case "" or BuiltinActions.Disabled:
                 return;
             case BuiltinActions.DpiShift:
-                if (pulse || down == dpiShiftHeld) return;
-                dpiShiftHeld = down;
+                if (pulse || down == DpiShiftHeld) return;
+                DpiShiftHeld = down;
                 SendDpi(down ? profile.ShiftDpi : profile.Dpi);
+                StateChanged?.Invoke();
                 return;
             case BuiltinActions.DpiUp or BuiltinActions.DpiDown or BuiltinActions.DpiCycle:
                 if (down) StepDpi(assignment);
@@ -440,7 +441,7 @@ internal sealed class MouseService : IDisposable
 
     public void ApplyDeviceSettings()
     {
-        SendDpi(dpiShiftHeld ? ActiveProfile.ShiftDpi : ActiveProfile.Dpi);
+        SendDpi(DpiShiftHeld ? ActiveProfile.ShiftDpi : ActiveProfile.Dpi);
         SendReportRate(ActiveProfile.ReportRate);
     }
 

@@ -59,7 +59,6 @@ public sealed class Settings
     /// <summary>Legacy bit-to-"G7" labels from the first prototype; migrated into <see cref="ControlBits"/>.</summary>
     public Dictionary<int, string>? ButtonNames { get; set; }
     public string ActiveProfileId { get; set; } = "";
-    public bool SuppressStandardActions { get; set; }
     public bool AutoConnect { get; set; } = true;
     public bool AutoSwitchProfiles { get; set; } = true;
     /// <summary>Closing the window keeps BetterGhub running in the notification area.</summary>
@@ -117,7 +116,6 @@ public sealed class Settings
         Macros = other.Macros;
         ControlBits = other.ControlBits;
         ActiveProfileId = other.ActiveProfileId;
-        SuppressStandardActions = other.SuppressStandardActions;
         AutoConnect = other.AutoConnect;
         AutoSwitchProfiles = other.AutoSwitchProfiles;
         CloseToTray = other.CloseToTray;
@@ -199,7 +197,7 @@ public static class BuiltinActions
         (DpiCycle, "DPI Cycle", "Step through DPI speeds", "Mouse"),
         (DpiShift, "DPI Shift", "Hold for the DPI Shift speed", "Mouse"),
         (GShift, "G-Shift", "Hold to use the G-Shift layer", "Device"),
-        (Disabled, "Do nothing", "Run nothing (pair with blocking to disable a button)", "Device"),
+        (Disabled, "Do nothing", "Disable the button", "Device"),
         (Assignments.KeyId("VolumeUp"), "Volume Up", "", "Media"),
         (Assignments.KeyId("VolumeDown"), "Volume Down", "", "Media"),
         (Assignments.KeyId("NextTrack"), "Next Track", "", "Media"),
