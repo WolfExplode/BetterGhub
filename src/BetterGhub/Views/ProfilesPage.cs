@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using BetterGhub.Core;
+using BetterGhub.Input;
 using BetterGhub.Services;
 
 namespace BetterGhub.Views;
@@ -24,6 +25,10 @@ internal sealed class ProfilesPage : UserControl, IPage
         Button add = Ui.Button("Add application", AddApplication, "PrimaryBtn", "");
         DockPanel.SetDock(add, Dock.Right);
         head.Children.Add(add);
+        Button pick = Ui.Button("", PickWindow, "Btn", "", "Pick an application by clicking its window");
+        DockPanel.SetDock(pick, Dock.Right);
+        pick.Margin = new Thickness(0, 0, 8, 0);
+        head.Children.Add(pick);
         autoSwitch.Style = Ui.Style("Switch");
         autoSwitch.Content = Ui.Text("Switch profiles automatically when an application gets focus", color: "Text");
         autoSwitch.VerticalAlignment = VerticalAlignment.Center;
@@ -84,13 +89,39 @@ internal sealed class ProfilesPage : UserControl, IPage
     {
         Microsoft.Win32.OpenFileDialog dialog = new() { Filter = "Applications (*.exe)|*.exe", Title = "Choose a game or application" };
         if (dialog.ShowDialog(Window.GetWindow(this)) != true) return;
-        MouseProfile? existing = service.Settings.Profiles.FirstOrDefault(p => string.Equals(p.ApplicationPath, dialog.FileName, StringComparison.OrdinalIgnoreCase));
+        AddProfile(dialog.FileName);
+    }
+
+    private void PickWindow()
+    {
+        MainWindow window = (MainWindow)Window.GetWindow(this);
+        WindowState previous = window.WindowState;
+        PickHighlight highlight = new();
+        try
+        {
+            WindowPicker picker = new(path =>
+            {
+                highlight.Close();
+                window.WindowState = previous;
+                window.Activate();
+                if (path is null) window.ShowToast("No application picked");
+                else AddProfile(path);
+            });
+            picker.Hover += highlight.Track;
+        }
+        catch (Exception error) { highlight.Close(); window.ShowToast(error.Message); return; }
+        window.WindowState = WindowState.Minimized; // Get out of the way of the window being picked.
+    }
+
+    private void AddProfile(string path)
+    {
+        MouseProfile? existing = service.Settings.Profiles.FirstOrDefault(p => string.Equals(p.ApplicationPath, path, StringComparison.OrdinalIgnoreCase));
         if (existing is not null) { selected = existing; Refresh(); return; }
         MouseProfile template = service.ActiveProfile;
         MouseProfile profile = new()
         {
-            Name = System.Diagnostics.FileVersionInfo.GetVersionInfo(dialog.FileName).FileDescription is { Length: > 0 and < 40 } description ? description : Path.GetFileNameWithoutExtension(dialog.FileName),
-            ApplicationPath = dialog.FileName,
+            Name = System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileDescription is { Length: > 0 and < 40 } description ? description : Path.GetFileNameWithoutExtension(path),
+            ApplicationPath = path,
             Dpi = template.Dpi, DpiStages = [.. template.DpiStages], ShiftDpi = template.ShiftDpi, ReportRate = template.ReportRate
         };
         service.Settings.Profiles.Add(profile);
