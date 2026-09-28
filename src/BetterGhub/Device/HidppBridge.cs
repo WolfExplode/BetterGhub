@@ -8,12 +8,12 @@ namespace BetterGhub.Device;
 /// <summary>
 /// Native HID++ 2.0 bridge for the G502 X LIGHTSPEED on a 046d:c547 receiver (device slot 1).
 /// Enables volatile host mode (0x8100) and button spying (0x8110), streams button bits, and applies
-/// DPI (0x2201) and report rate (0x8060). Never writes flash. Mirrors bridge/hidpp_bridge.py.
+/// DPI (0x2201) and report rate (0x8060), and reads the battery (0x1004 or 0x1000). Never writes flash. Mirrors bridge/hidpp_bridge.py.
 /// </summary>
 internal sealed class HidppBridge : IDisposable
 {
     private const ushort VendorId = 0x046D, ProductId = 0xC547;
-    private const byte Slot = 1, SoftwareId = 0x0D;
+    private const byte Slot = 1, ReceiverIndex = 0xFF, SoftwareId = 0x0D;
 
     private readonly ConcurrentQueue<(string Command, int Value)> commands = new();
     private Thread? worker;
@@ -105,6 +105,10 @@ internal sealed class HidppBridge : IDisposable
         }
         if (rateIndex != 0) interval = session.Call(rateIndex, 1, 0, 0, 0)[0];
         Emit(new ConnectedEvent(dpi, interval));
+        Emit(new FirmwareEvent(MouseFirmware(session), ReceiverFirmware(session)));
+        Battery battery = Battery.Find(session);
+        if (battery.Read(session) is { } charge) Emit(charge);
+        Stopwatch sinceBattery = Stopwatch.StartNew();
 
         int previous = 0;
         Stopwatch sinceReport = Stopwatch.StartNew();
@@ -147,6 +151,12 @@ internal sealed class HidppBridge : IDisposable
                 }
                 previous = mask;
             }
+            else if (battery.Parse(report) is { } changed) Emit(changed);
+            if (sinceBattery.Elapsed > TimeSpan.FromSeconds(60))
+            {
+                if (battery.Read(session) is { } polled) Emit(polled);
+                sinceBattery.Restart();
+            }
             if (sinceReport.Elapsed > TimeSpan.FromSeconds(5))
             {
                 // The receiver stays open while the mouse sleeps; re-arm so wake-ups and power cycles recover.
@@ -155,6 +165,67 @@ internal sealed class HidppBridge : IDisposable
                 sinceReport.Restart();
             }
         }
+    }
+
+    /// <summary>Unified Battery (0x1004) where the mouse has it, else Battery Status (0x1000).</summary>
+    private sealed record Battery(byte Index, bool Unified)
+    {
+        public static Battery Find(Session session)
+        {
+            byte unified = session.Call(0, 0, 0x10, 0x04, 0)[0];
+            return unified != 0 ? new Battery(unified, true) : new Battery(session.Call(0, 0, 0x10, 0x00, 0)[0], false);
+        }
+
+        /// <summary>Asks for the charge; null when the mouse has no battery feature or refuses the request.</summary>
+        public BatteryEvent? Read(Session session)
+        {
+            if (Index == 0) return null;
+            try { return Decode(session.Call(Index, Unified ? (byte)1 : (byte)0, 0, 0, 0)); }
+            catch (HidppErrorException) { return null; }
+        }
+
+        /// <summary>The mouse broadcasts a battery event (function 0, software id 0) when the charge or power source changes.</summary>
+        public BatteryEvent? Parse(byte[]? report) =>
+            Index != 0 && report is { Length: >= 7 } && report[0] is 0x10 or 0x11 && report[1] == Slot && report[2] == Index && report[3] == 0
+                ? Decode(report[4..]) : null;
+
+        private BatteryEvent Decode(byte[] payload)
+        {
+            if (!Unified) return new BatteryEvent(payload[0], payload[2] is >= 1 and <= 4);
+            // 0x1004: state of charge, level flags (1 critical, 2 low, 4 good, 8 full), charging status, external power.
+            int percent = payload[0] != 0 ? payload[0] : payload[1] switch { >= 8 => 100, >= 4 => 50, >= 2 => 20, >= 1 => 5, _ => 0 };
+            return new BatteryEvent(percent, payload[2] is 1 or 2 or 3);
+        }
+    }
+
+    /// <summary>Main application firmware from DeviceInformation (0x0003): number, revision and build, shown as hex like G HUB.</summary>
+    private static string? MouseFirmware(Session session)
+    {
+        try
+        {
+            byte index = session.Call(0, 0, 0x00, 0x03, 0)[0];
+            if (index == 0) return null;
+            int entities = session.Call(index, 0, 0, 0, 0)[0];
+            for (int entity = 0; entity < entities; entity++)
+            {
+                byte[] info = session.Call(index, 1, (byte)entity, 0, 0); // type, 3-letter prefix, number, revision, build (2 bytes)
+                if (info.Length >= 8 && info[0] == 0) return $"{info[4]:X}.{info[5]:X}.{(info[6] << 8) | info[7]:X}";
+            }
+        }
+        catch (HidppErrorException) { }
+        return null;
+    }
+
+    /// <summary>Receiver firmware from HID++ 1.0 register 0xF1: major and minor, then build.</summary>
+    private static string? ReceiverFirmware(Session session)
+    {
+        try
+        {
+            byte[] version = session.ReadReceiverRegister(0xF1, 1); // Echoes the parameter first.
+            byte[] build = session.ReadReceiverRegister(0xF1, 2);
+            return $"{version[1]:X}.{version[2]:X}.{(build[1] << 8) | build[2]:X}";
+        }
+        catch (HidppErrorException) { return null; }
     }
 
     private static void EnsureHostMode(Session session, byte modeIndex)
@@ -185,12 +256,19 @@ internal sealed class HidppBridge : IDisposable
             if (dpi != 0) { byte[] p = session.Call(dpi, 2, 0, 0, 0); text.AppendLine($"  DPI: {(p[1] << 8) | p[2]}"); }
             byte rate = session.Call(0, 0, 0x80, 0x60, 0)[0];
             if (rate != 0) text.AppendLine($"  Report interval: {session.Call(rate, 1, 0, 0, 0)[0]} ms");
+            text.AppendLine($"  Mouse firmware: {MouseFirmware(session) ?? "unknown"}");
+            text.AppendLine($"  Receiver firmware: {ReceiverFirmware(session) ?? "unknown"}");
+            Battery battery = Battery.Find(session);
+            text.AppendLine($"  Battery ({(battery.Unified ? "UnifiedBattery 0x1004" : "BatteryStatus 0x1000")}): feature index {battery.Index}");
+            if (battery.Read(session) is { } charge) text.AppendLine($"  Battery: {charge.Percent}%{(charge.Charging ? " charging" : "")}");
         }
         catch (Exception error) { text.AppendLine($"Probe stopped: {Friendly(error)} ({error.GetType().Name}: {error.Message})"); }
         return text.ToString();
     }
 
     private sealed class ReceiverMissingException(string message) : IOException(message);
+    /// <summary>The mouse answered with a HID++ error: the request was refused, the link is fine.</summary>
+    private sealed class HidppErrorException(string message) : IOException(message);
 
     /// <summary>The two vendor collections: usage 1 (short 0x10 reports) and usage 2 (long 0x11 reports).</summary>
     private sealed class Session : IDisposable
@@ -254,10 +332,15 @@ internal sealed class HidppBridge : IDisposable
         public byte[]? Next(int timeoutMs) => pending.Count > 0 ? pending.Dequeue() : Take(timeoutMs);
 
         /// <summary>Short HID++ request; returns the reply parameters (bytes after the 4-byte header).</summary>
-        public byte[] Call(byte feature, byte function, byte a, byte b, byte c)
+        public byte[] Call(byte feature, byte function, byte a, byte b, byte c) =>
+            Request(Slot, feature, (byte)((function << 4) | SoftwareId), a, b, c);
+
+        /// <summary>Reads a HID++ 1.0 register (sub-id 0x81) of the receiver itself (device index 0xFF).</summary>
+        public byte[] ReadReceiverRegister(byte address, byte a) => Request(ReceiverIndex, 0x81, address, a, 0, 0);
+
+        private byte[] Request(byte device, byte feature, byte functionSoftware, byte a, byte b, byte c)
         {
-            byte functionSoftware = (byte)((function << 4) | SoftwareId);
-            byte[] request = [0x10, Slot, feature, functionSoftware, a, b, c];
+            byte[] request = [0x10, device, feature, functionSoftware, a, b, c];
             shortDevice.Write(request);
             Stopwatch clock = Stopwatch.StartNew();
             while (clock.ElapsedMilliseconds < 2000)
@@ -265,18 +348,18 @@ internal sealed class HidppBridge : IDisposable
                 byte[]? reply = Take((int)Math.Max(1, 2000 - clock.ElapsedMilliseconds));
                 if (reply is null) break;
                 if (reply.Length == 0) continue; // Wake signal.
-                if (reply.Length >= 4 && reply[1] == Slot)
+                if (reply.Length >= 4 && reply[1] == device)
                 {
                     if (reply[0] == 0x8F || (reply[0] == 0x10 && reply[2] == 0x8F))
-                        throw new IOException($"HID++ error response: {Convert.ToHexString(reply)}");
+                        throw new HidppErrorException($"HID++ error response: {Convert.ToHexString(reply)}");
                     if (reply[0] == 0x11 && reply.Length >= 6 && reply[2] == 0xFF && reply[3] == feature && reply[4] == functionSoftware)
-                        throw new IOException($"HID++ error {reply[5]} for feature {feature} function {function}");
+                        throw new HidppErrorException($"HID++ error {reply[5]} for feature {feature} function {functionSoftware >> 4}");
                     if (reply[0] is 0x10 or 0x11 && reply[2] == feature && reply[3] == functionSoftware)
                         return reply[4..];
                 }
                 if (pending.Count < 64) pending.Enqueue(reply); // Keep button reports that arrive mid-call.
             }
-            throw new TimeoutException($"No reply to HID++ feature {feature} function {function}");
+            throw new TimeoutException($"No reply to HID++ feature {feature} function {functionSoftware >> 4}");
         }
 
         public void Dispose()

@@ -132,6 +132,7 @@ public partial class MainWindow : Window
         CompactDot.Fill = dot;
         CompactStatus.ToolTip = $"{title} · {detail}";
         StatusDetail.Text = detail;
+        UpdateBattery();
         ConnectButton.Content = button;
         ConnectButton.Style = (Style)FindResource(service.State == ConnectionState.Connected ? "Btn" : "PrimaryBtn");
         GShiftBadge.Visibility = service.GShiftHeld ? Visibility.Visible : Visibility.Collapsed;
@@ -140,6 +141,27 @@ public partial class MainWindow : Window
         ProfileKind.Text = profile.IsDesktop ? "DESKTOP" : "APPLICATION";
         ProfileName.Text = profile.Name;
         ProfileIcon.Content = ShellIcons.Element(profile, 18);
+    }
+
+    private void UpdateBattery()
+    {
+        if (service.State != ConnectionState.Connected || service.BatteryPercent is not int percent)
+        {
+            BatteryRow.Visibility = Visibility.Collapsed;
+            return;
+        }
+        bool charging = service.BatteryCharging;
+        // Segoe battery glyphs: Battery0–9 are E850–E859, Battery10 is E83F; charging variants have a bolt.
+        int step = Math.Clamp((int)Math.Round(percent / 10.0), 0, 10);
+        BatteryGlyph.Text = charging ? "" : step == 10 ? "" : ((char)(0xE850 + step)).ToString();
+        Brush color = (Brush)FindResource(charging ? "Success" : percent <= 10 ? "Danger" : percent <= 20 ? "Warning" : "Muted");
+        BatteryGlyph.Foreground = color;
+        BatteryText.Text = charging ? $"{percent}% · Charging" : $"{percent}%";
+        BatteryText.Foreground = percent <= 10 && !charging ? color : (Brush)FindResource("Text");
+        string tooltip = service.BatteryHoursLeft is int hours ? $"Battery level: ~{hours} hours remaining" : "Battery level: charging";
+        BatteryRow.ToolTip = tooltip;
+        CompactStatus.ToolTip += $" · {percent}% battery";
+        BatteryRow.Visibility = Visibility.Visible;
     }
 
     private static string Fallback(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;

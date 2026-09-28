@@ -11,6 +11,9 @@ internal sealed class DevicePage : UserControl, IPage
 {
     private readonly MouseService service;
     private readonly StackPanel connection = new();
+    private readonly StackPanel battery = new();
+    private readonly Border batteryCard;
+    private TextBlock? mouseFirmware, receiverFirmware;
     private readonly StackPanel appCard = new();
     private readonly WrapPanel lamps = new();
     private readonly ListBox log = new();
@@ -26,6 +29,8 @@ internal sealed class DevicePage : UserControl, IPage
 
         StackPanel left = new();
         left.Children.Add(Ui.Card(connection, new Thickness(22)));
+        batteryCard = Ui.Card(battery, new Thickness(22)).With(new Thickness(0, 16, 0, 0));
+        left.Children.Add(batteryCard);
         left.Children.Add(Ui.Card(appCard, new Thickness(22)).With(new Thickness(0, 16, 0, 0)));
         left.Children.Add(Ui.Card(About(), new Thickness(22)).With(new Thickness(0, 16, 0, 0)));
         layout.Children.Add(Ui.Scroll(left));
@@ -66,7 +71,7 @@ internal sealed class DevicePage : UserControl, IPage
             if (log.Items.Count > 400) log.Items.RemoveAt(0);
             if (IsVisible) log.ScrollIntoView(log.Items[^1]);
         };
-        service.StateChanged += () => { if (IsLoaded) RenderConnection(); };
+        service.StateChanged += () => { if (IsLoaded) { RenderConnection(); RenderBattery(); RenderFirmware(); } };
         service.ButtonChanged += (bit, down) =>
         {
             MouseControl? control = service.Settings.ControlFor(bit);
@@ -93,6 +98,8 @@ internal sealed class DevicePage : UserControl, IPage
     public void Refresh()
     {
         RenderConnection();
+        RenderBattery();
+        RenderFirmware();
         RenderApp();
         lamps.Children.Clear();
         lampsById.Clear();
@@ -136,6 +143,44 @@ internal sealed class DevicePage : UserControl, IPage
         presenter.SetValue(MarginProperty, new Thickness(4, 1, 4, 1));
         template.VisualTree = presenter;
         return template;
+    }
+
+    /// <summary>Charge, estimated hours and G HUB's power breakdown; hidden until the mouse reports its battery.</summary>
+    private void RenderBattery()
+    {
+        battery.Children.Clear();
+        if (service.State != ConnectionState.Connected || service.BatteryPercent is not int percent)
+        {
+            batteryCard.Visibility = Visibility.Collapsed;
+            return;
+        }
+        batteryCard.Visibility = Visibility.Visible;
+        int interval = service.PowerIntervalMs;
+        battery.Children.Add(Ui.Text("Battery", "H2"));
+        TextBlock hours = Ui.Text(service.BatteryCharging ? "Charging" : $"Approx {service.BatteryHoursLeft} hours left", "Body", size: 13);
+        hours.VerticalAlignment = VerticalAlignment.Center;
+        battery.Children.Add(Ui.Row(10, Ui.Text($"{percent}%", size: 26, bold: true, color: "Text"), hours).With(new Thickness(0, 10, 0, 16)));
+        battery.Children.Add(Ui.Text("POWER CONSUMPTION", "Overline").With(new Thickness(0, 0, 0, 10)));
+        void Line(string name, string value)
+        {
+            DockPanel row = new() { Margin = new Thickness(0, 0, 0, 8) };
+            TextBlock label = Ui.Text(name, size: 12, color: "Muted");
+            label.Width = 110;
+            row.Children.Add(label);
+            row.Children.Add(Ui.Text(value, size: 12, color: "Text"));
+            battery.Children.Add(row);
+        }
+        Line("System", $"{PowerModel.SystemMilliwatts:0} mW");
+        Line("Report rate", $"{PowerModel.ReportRateMilliwatts(interval):0} mW at {1000 / interval} Hz");
+        Line("Max charge", $"Approx {PowerModel.MaxHours(interval):0} hours");
+        battery.Children.Add(Ui.Text("Estimated like G HUB, from typical power draw. Lower report rates last longer.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 6, 0, 0)));
+    }
+
+    private void RenderFirmware()
+    {
+        if (mouseFirmware is null || receiverFirmware is null) return;
+        mouseFirmware.Text = service.MouseFirmware ?? "Connect to read";
+        receiverFirmware.Text = service.ReceiverFirmware ?? "Connect to read";
     }
 
     private void RenderConnection()
@@ -216,18 +261,22 @@ internal sealed class DevicePage : UserControl, IPage
     {
         StackPanel panel = new();
         panel.Children.Add(Ui.Text("Device", "H2").With(new Thickness(0, 0, 0, 12)));
-        void Line(string name, string value)
+        TextBlock Line(string name, string value)
         {
             DockPanel row = new() { Margin = new Thickness(0, 0, 0, 8) };
             TextBlock label = Ui.Text(name, size: 12, color: "Muted");
             label.Width = 110;
             row.Children.Add(label);
-            row.Children.Add(Ui.Text(value, size: 12, color: "Text", wrap: true));
+            TextBlock text = Ui.Text(value, size: 12, color: "Text", wrap: true);
+            row.Children.Add(text);
             panel.Children.Add(row);
+            return text;
         }
         Line("Mouse", "G502 X LIGHTSPEED");
+        mouseFirmware = Line("Mouse firmware", "");
         Line("Receiver", "LIGHTSPEED 046D:C547, slot 1");
-        Line("Protocol", "HID++ 2.0 · 0x8100 host mode, 0x8110 button spy, 0x2201 DPI, 0x8060 report rate");
+        receiverFirmware = Line("Receiver firmware", "");
+        Line("Protocol", "HID++ 2.0 · 0x8100 host mode, 0x8110 button spy, 0x2201 DPI, 0x8060 report rate, 0x1004 battery");
         Line("Settings", Settings.FilePath);
         Button open = Ui.Button("Open settings folder", () =>
         {

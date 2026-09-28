@@ -40,6 +40,17 @@ internal sealed class MouseService : IDisposable
     public List<LogEntry> Log { get; } = [];
     public MouseProfile ActiveProfile => Settings.ActiveProfile;
     public int DeviceReportRate => DeviceIntervalMs > 0 ? 1000 / DeviceIntervalMs : 0;
+    /// <summary>Charge in percent, or null until the mouse reports it.</summary>
+    public int? BatteryPercent { get; private set; }
+    public bool BatteryCharging { get; private set; }
+    /// <summary>Firmware versions, kept after a disconnect since they don't change without an update.</summary>
+    public string? MouseFirmware { get; private set; }
+    public string? ReceiverFirmware { get; private set; }
+    /// <summary>Report interval the battery estimate uses; 1 ms until the mouse reports its rate.</summary>
+    public int PowerIntervalMs => DeviceIntervalMs > 0 ? DeviceIntervalMs : 1;
+
+    /// <summary>Rough hours left at the current charge and report rate, like G HUB's; null while charging or unknown.</summary>
+    public int? BatteryHoursLeft => BatteryPercent is int percent && !BatteryCharging ? (int)Math.Round(PowerModel.HoursLeft(percent, PowerIntervalMs)) : null;
 
     /// <summary>Connection, DPI, profile or layer changed.</summary>
     public event Action? StateChanged;
@@ -139,6 +150,8 @@ internal sealed class MouseService : IDisposable
     {
         State = bridge.Running ? ConnectionState.Connecting : ConnectionState.Disconnected;
         StateDetail = reason;
+        BatteryPercent = null;
+        BatteryCharging = false;
         ReleaseAll();
         StateChanged?.Invoke();
     }
@@ -179,6 +192,18 @@ internal sealed class MouseService : IDisposable
                 break;
             case ReportIntervalEvent rate:
                 DeviceIntervalMs = rate.ReportIntervalMs;
+                StateChanged?.Invoke();
+                break;
+            case FirmwareEvent firmware:
+                MouseFirmware = firmware.Mouse ?? MouseFirmware;
+                ReceiverFirmware = firmware.Receiver ?? ReceiverFirmware;
+                StateChanged?.Invoke();
+                break;
+            case BatteryEvent battery:
+                if (BatteryPercent is null) Write($"Battery {battery.Percent}%{(battery.Charging ? ", charging" : "")}");
+                else if (battery.Charging != BatteryCharging) Write(battery.Charging ? "Charging" : "Running on battery");
+                BatteryPercent = battery.Percent;
+                BatteryCharging = battery.Charging;
                 StateChanged?.Invoke();
                 break;
             case DeviceErrorEvent error:
@@ -486,6 +511,9 @@ internal sealed class MouseService : IDisposable
         State = ConnectionState.Connected;
         DeviceDpi = dpi;
         DeviceIntervalMs = intervalMs;
+        BatteryPercent = 77;
+        MouseFirmware = "30.0.14";
+        ReceiverFirmware = "4.2.9";
         StateChanged?.Invoke();
     }
 
