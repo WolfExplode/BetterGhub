@@ -20,7 +20,7 @@
         <Border Background="{StaticResource Rail}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
             <DockPanel x:Name="RailPanel" Margin="16,0,16,16">
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Height="64" VerticalAlignment="Center">
-                    <Image Source="/Assets/icon-256.png" Width="32" Height="32" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <Image Source="/Assets/logo-256.png" Width="28" Height="28" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
                     <TextBlock x:Name="Wordmark" Text="BetterGhub" FontFamily="{StaticResource DisplayFont}" FontWeight="SemiBold" FontSize="18"
                                VerticalAlignment="Center" Margin="11,0,0,1"/>
                 </StackPanel>

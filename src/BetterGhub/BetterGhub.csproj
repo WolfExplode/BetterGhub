@@ -18,8 +18,9 @@
     <Copyright>BetterGhub</Copyright>
   </PropertyGroup>
   <ItemGroup>
-    <Resource Include="..\..\images\g502-x-lightspeed-mouse-top-angle-transparent.png" Link="Assets\mouse-top.png" />
-    <Resource Include="..\..\images\g502-x-lightspeed-mouse-profile-angle.png" Link="Assets\mouse-side.png" />
+    <Resource Include="..\..\assets\artwork\g502-x-lightspeed-mouse-top-angle-transparent.png" Link="Assets\mouse-top.png" />
+    <Resource Include="..\..\assets\artwork\g502-x-lightspeed-mouse-profile-angle.png" Link="Assets\mouse-side.png" />
     <Resource Include="Assets\icon-256.png" />
+    <Resource Include="Assets\logo-256.png" />
   </ItemGroup>
 </Project>

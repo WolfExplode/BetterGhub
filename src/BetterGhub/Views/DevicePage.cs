@@ -171,13 +171,13 @@ internal sealed class DevicePage : UserControl, IPage
 
         CheckBox startup = new()
         {
-            Style = Ui.Style("Switch"), IsChecked = Installer.StartsWithWindows(),
+            Style = Ui.Style("Switch"), IsChecked = AutoStart.IsEnabled,
             Content = Ui.Text("Start with Windows, in the tray", color: "Text")
         };
         startup.Click += (_, _) =>
         {
-            try { Installer.SetStartWithWindows(startup.IsChecked == true, Installer.IsInstalled ? Installer.InstalledExe : Installer.CurrentExe); }
-            catch (Exception error) { service.Write("Could not change startup: " + error.Message); startup.IsChecked = Installer.StartsWithWindows(); }
+            try { AutoStart.Set(startup.IsChecked == true); }
+            catch (Exception error) { service.Write("Could not change startup: " + error.Message); startup.IsChecked = AutoStart.IsEnabled; }
         };
         appCard.Children.Add(startup);
 
@@ -195,31 +195,7 @@ internal sealed class DevicePage : UserControl, IPage
         };
         tray.Click += (_, _) => { service.Settings.CloseToTray = tray.IsChecked == true; service.Save(); };
         appCard.Children.Add(tray);
-
-        string where = Installer.IsDeveloperBuild ? "Developer build"
-            : Installer.IsRunningInstalled ? "Installed for this Windows account"
-            : "Running without installing";
-        appCard.Children.Add(Ui.Text($"Version {Installer.Version} · {where}", "Body", size: 12).With(new Thickness(0, 18, 0, 10)));
-        if (!Installer.IsDeveloperBuild)
-        {
-            Button action = Installer.IsRunningInstalled
-                ? Ui.Button("Uninstall…", () => Process.Start(new ProcessStartInfo(Installer.InstalledExe, "--uninstall") { UseShellExecute = false }), "DangerBtn", "")
-                : Ui.Button(Installer.IsInstalled ? "Open installed version" : "Install…", InstallFromPortable, "Btn", "");
-            action.HorizontalAlignment = HorizontalAlignment.Left;
-            appCard.Children.Add(action);
-        }
-    }
-
-    private void InstallFromPortable()
-    {
-        try
-        {
-            if (!Installer.IsInstalled) Installer.Install(desktopShortcut: false, startWithWindows: Installer.StartsWithWindows());
-            // Hand over to the installed copy: this one quits first so the single-instance check lets it start.
-            App.Current.Quit();
-            Process.Start(new ProcessStartInfo(Installer.InstalledExe) { UseShellExecute = true });
-        }
-        catch (Exception error) { service.Write("Install failed: " + error.Message); }
+        appCard.Children.Add(Ui.Text($"Version {AutoStart.Version} · portable, nothing is installed. If you move the exe, start it once from the new place and autostart follows.", "Body", size: 12).With(new Thickness(0, 18, 0, 0)));
     }
 
     private FrameworkElement About()

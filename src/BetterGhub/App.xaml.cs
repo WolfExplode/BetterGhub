@@ -1,7 +1,5 @@
-using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
-using BetterGhub.Core;
 using BetterGhub.Services;
 using BetterGhub.Views;
 
@@ -9,9 +7,9 @@ namespace BetterGhub;
 
 public partial class App : Application
 {
-    private const string InstanceName = "BetterGhub.SingleInstance", ActivateName = "BetterGhub.Activate", QuitName = "BetterGhub.Quit";
+    private const string InstanceName = "BetterGhub.SingleInstance", ActivateName = "BetterGhub.Activate";
     private Mutex? singleInstance;
-    private EventWaitHandle? activateSignal, quitSignal;
+    private EventWaitHandle? activateSignal;
     private MouseService? service;
     private MainWindow? window;
     private TrayIcon? tray;
@@ -60,19 +58,6 @@ public partial class App : Application
             error.Handled = true;
         };
 
-        if (args.Contains("--uninstall"))
-        {
-            RunUninstall(quiet: args.Contains("--quiet"));
-            Shutdown();
-            return;
-        }
-
-        if (!Installer.IsDeveloperBuild && !Installer.IsRunningInstalled && !args.Contains("--portable") && OfferInstall())
-        {
-            Shutdown();
-            return;
-        }
-
         singleInstance = new Mutex(true, InstanceName, out bool created);
         if (!created)
         {
@@ -84,9 +69,8 @@ public partial class App : Application
             return;
         }
         activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateName);
-        quitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, QuitName);
         ThreadPool.RegisterWaitForSingleObject(activateSignal, (_, _) => Dispatcher.BeginInvoke(ShowMainWindow), null, -1, false);
-        ThreadPool.RegisterWaitForSingleObject(quitSignal, (_, _) => Dispatcher.BeginInvoke(Quit), null, -1, false);
+        AutoStart.RefreshPath();
 
         service = new MouseService(new DispatcherSynchronizationContext(Dispatcher));
         window = new MainWindow(service);
@@ -98,69 +82,6 @@ public partial class App : Application
 
         if (args.Contains("--minimized")) window.PrepareHidden();
         else window.Show();
-    }
-
-    // ── Install / uninstall ───────────────────────────────────────────────────
-
-    /// <summary>Returns true when this process should exit (installed and relaunched, or cancelled).</summary>
-    private bool OfferInstall()
-    {
-        Settings peek = Settings.Load();
-        if (peek.SkipInstallPrompt && !Installer.IsInstalled) return false;
-        InstallWindow dialog = new();
-        dialog.ShowDialog();
-        if (dialog.Choice is null) return true;
-        if (dialog.Choice == false)
-        {
-            if (!Installer.IsInstalled)
-            {
-                peek.SkipInstallPrompt = true;
-                try { peek.Save(); } catch (Exception) { /* Only a preference. */ }
-            }
-            return false;
-        }
-        try
-        {
-            CloseRunningInstance();
-            Installer.Install(dialog.DesktopShortcut, dialog.StartWithWindows);
-            Process.Start(new ProcessStartInfo(Installer.InstalledExe) { UseShellExecute = true });
-        }
-        catch (Exception error)
-        {
-            MessageBox.Show($"BetterGhub could not be installed.\n\n{error.Message}", "Install BetterGhub", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        return true;
-    }
-
-    private static void RunUninstall(bool quiet)
-    {
-        if (!quiet && MessageBox.Show("Uninstall BetterGhub?", "Uninstall BetterGhub", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-            return;
-        bool deleteSettings = !quiet && MessageBox.Show("Also delete your macros, profiles and calibration?\n\nChoose No to keep them for a future install.",
-            "Uninstall BetterGhub", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes;
-        CloseRunningInstance();
-        try
-        {
-            Installer.Uninstall(deleteSettings);
-            if (!quiet) MessageBox.Show("BetterGhub was uninstalled. Power-cycle the mouse to return it to its onboard profile.", "Uninstall BetterGhub", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception error)
-        {
-            if (!quiet) MessageBox.Show($"Uninstall did not finish.\n\n{error.Message}", "Uninstall BetterGhub", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    /// <summary>Asks a running BetterGhub to quit and waits up to five seconds for it to exit.</summary>
-    private static void CloseRunningInstance()
-    {
-        if (!EventWaitHandle.TryOpenExisting(QuitName, out EventWaitHandle? quit)) return;
-        using (quit) quit.Set();
-        Stopwatch clock = Stopwatch.StartNew();
-        while (clock.Elapsed < TimeSpan.FromSeconds(5) && Mutex.TryOpenExisting(InstanceName, out Mutex? running))
-        {
-            running.Dispose();
-            Thread.Sleep(150);
-        }
     }
 
     // ── Tray ──────────────────────────────────────────────────────────────────
@@ -223,7 +144,6 @@ public partial class App : Application
         tray?.Dispose();
         service?.Dispose();
         activateSignal?.Dispose();
-        quitSignal?.Dispose();
         singleInstance?.Dispose();
         base.OnExit(e);
     }

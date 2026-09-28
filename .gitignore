@@ -1,9 +1,12 @@
 .venv/
 **/bin/
 **/obj/
-capture*.log
 __pycache__/
 *.tmp
 settings.json
 debug.log
 dist/
+# Local hardware captures
+docs/captures/
+# Third-party repositories cloned for reference
+reference/
