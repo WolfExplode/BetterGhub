@@ -46,6 +46,8 @@ internal sealed class MouseService : IDisposable
     /// <summary>Firmware versions, kept after a disconnect since they don't change without an update.</summary>
     public string? MouseFirmware { get; private set; }
     public string? ReceiverFirmware { get; private set; }
+    /// <summary>On-board profile slots as last read from the mouse; kept after a disconnect.</summary>
+    public IReadOnlyList<OnboardSlot>? OnboardSlots { get; private set; }
     /// <summary>Report interval the battery estimate uses; 1 ms until the mouse reports its rate.</summary>
     public int PowerIntervalMs => DeviceIntervalMs > 0 ? DeviceIntervalMs : 1;
 
@@ -197,6 +199,10 @@ internal sealed class MouseService : IDisposable
             case FirmwareEvent firmware:
                 MouseFirmware = firmware.Mouse ?? MouseFirmware;
                 ReceiverFirmware = firmware.Receiver ?? ReceiverFirmware;
+                StateChanged?.Invoke();
+                break;
+            case OnboardMemoryEvent onboard:
+                OnboardSlots = onboard.Slots;
                 StateChanged?.Invoke();
                 break;
             case BatteryEvent battery:
@@ -457,6 +463,13 @@ internal sealed class MouseService : IDisposable
         catch (Exception error) { Write(error.Message); }
     }
 
+    /// <summary>Re-reads the on-board profile slots (read-only).</summary>
+    public void ReadOnboardMemory()
+    {
+        if (State != ConnectionState.Connected) return;
+        bridge.ReadOnboardMemory();
+    }
+
     public void SendReportRate(int hz)
     {
         if (State != ConnectionState.Connected) return;
@@ -514,7 +527,25 @@ internal sealed class MouseService : IDisposable
         BatteryPercent = 77;
         MouseFirmware = "30.0.14";
         ReceiverFirmware = "4.2.9";
+        OnboardSlots = SampleOnboardSlots();
         StateChanged?.Invoke();
+    }
+
+    /// <summary>Slots shaped like a real read (G HUB's factory layout), for --snapshot renders.</summary>
+    private static List<OnboardSlot> SampleOnboardSlots()
+    {
+        byte[] sector = new byte[255];
+        Array.Fill(sector, (byte)0xFF);
+        byte[] head = [1, 2, 1, 0x20, 0x03, 0xB0, 0x04, 0x40, 0x06, 0x60, 0x09, 0x80, 0x0C];
+        head.CopyTo(sector, 0);
+        uint[] buttons = [0x80010001, 0x80010002, 0x80010004, 0x80010008, 0x90070000, 0x80010010, 0x90010000, 0x90020000, 0x900A0000, 0x90030000, 0x90040000];
+        for (int i = 0; i < buttons.Length; i++)
+            for (int b = 0; b < 4; b++) sector[32 + i * 4 + b] = (byte)(buttons[i] >> (24 - b * 8));
+        ushort crc = OnboardProfiles.Checksum(sector);
+        sector[^2] = (byte)(crc >> 8);
+        sector[^1] = (byte)crc;
+        OnboardProfile profile = OnboardProfiles.Parse(sector, buttons.Length);
+        return [.. Enumerable.Range(1, 5).Select(n => new OnboardSlot(n, n, n <= 2, profile))];
     }
 
     public void Dispose()

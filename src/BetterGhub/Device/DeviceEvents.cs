@@ -1,3 +1,5 @@
+using BetterGhub.Core;
+
 namespace BetterGhub.Device;
 
 internal abstract record DeviceEvent;
@@ -10,4 +12,6 @@ internal sealed record ReportIntervalEvent(int ReportIntervalMs) : DeviceEvent;
 internal sealed record BatteryEvent(int Percent, bool Charging) : DeviceEvent;
 /// <summary>Firmware versions as G HUB shows them (e.g. 30.0.14); null when the device won't say.</summary>
 internal sealed record FirmwareEvent(string? Mouse, string? Receiver) : DeviceEvent;
+/// <summary>On-board profile slots read from the mouse's memory.</summary>
+internal sealed record OnboardMemoryEvent(IReadOnlyList<OnboardSlot> Slots) : DeviceEvent;
 internal sealed record DeviceErrorEvent(string Message) : DeviceEvent;

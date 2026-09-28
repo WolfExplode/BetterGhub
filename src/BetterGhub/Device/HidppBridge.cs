@@ -2,13 +2,14 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using BetterGhub.Core;
 
 namespace BetterGhub.Device;
 
 /// <summary>
 /// Native HID++ 2.0 bridge for the G502 X LIGHTSPEED on a 046d:c547 receiver (device slot 1).
 /// Enables volatile host mode (0x8100) and button spying (0x8110), streams button bits, and applies
-/// DPI (0x2201) and report rate (0x8060), and reads the battery (0x1004 or 0x1000). Never writes flash. Mirrors bridge/hidpp_bridge.py.
+/// DPI (0x2201) and report rate (0x8060), and reads the battery (0x1004 or 0x1000) and on-board profiles. Never writes flash. Mirrors bridge/hidpp_bridge.py.
 /// </summary>
 internal sealed class HidppBridge : IDisposable
 {
@@ -47,6 +48,7 @@ internal sealed class HidppBridge : IDisposable
 
     public void SetDpi(int dpi) => Send("dpi", dpi);
     public void SetReportInterval(int milliseconds) => Send("rate", milliseconds);
+    public void ReadOnboardMemory() => Send("onboard", 0);
 
     private void Send(string command, int value)
     {
@@ -106,6 +108,7 @@ internal sealed class HidppBridge : IDisposable
         if (rateIndex != 0) interval = session.Call(rateIndex, 1, 0, 0, 0)[0];
         Emit(new ConnectedEvent(dpi, interval));
         Emit(new FirmwareEvent(MouseFirmware(session), ReceiverFirmware(session)));
+        if (ReadOnboard(session, modeIndex) is { } onboard) Emit(onboard);
         Battery battery = Battery.Find(session);
         if (battery.Read(session) is { } charge) Emit(charge);
         Stopwatch sinceBattery = Stopwatch.StartNew();
@@ -120,7 +123,12 @@ internal sealed class HidppBridge : IDisposable
                 if (command.Command == "dpi" && commands.Any(x => x.Command == "dpi")) continue;
                 try
                 {
-                    if (command.Command == "dpi")
+                    if (command.Command == "onboard")
+                    {
+                        if (ReadOnboard(session, modeIndex) is { } memory) Emit(memory);
+                        else Emit(new DeviceErrorEvent("Could not read on-board memory"));
+                    }
+                    else if (command.Command == "dpi")
                     {
                         if (dpiIndex == 0 || command.Value is < 100 or > 25600) throw new ArgumentException("DPI unavailable or outside 100–25600");
                         byte[] payload = session.Call(dpiIndex, 3, 0, (byte)(command.Value >> 8), (byte)command.Value); // Echoes the DPI set.
@@ -198,6 +206,46 @@ internal sealed class HidppBridge : IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads the slot directory (sector 0) and every slot's profile sector with 0x8100 memoryRead.
+    /// Read-only; null when the mouse refuses.
+    /// </summary>
+    private static OnboardMemoryEvent? ReadOnboard(Session session, byte modeIndex)
+    {
+        try
+        {
+            // getDescription: memory model, profile format, macro format, profile count, factory profile count,
+            // button count, sector count, sector size (big-endian).
+            byte[] description = session.Call(modeIndex, 0, 0, 0, 0);
+            int profileCount = description[3], buttonCount = description[5], sectorSize = (description[7] << 8) | description[8];
+            if (description[1] != 3 || sectorSize < 64) return null; // Unknown profile format.
+            List<OnboardSlot> slots = [];
+            int number = 1;
+            foreach ((int sector, bool enabled) in OnboardProfiles.ParseDirectory(ReadSector(session, modeIndex, 0, sectorSize), profileCount))
+            {
+                OnboardProfile? profile = null;
+                try { profile = OnboardProfiles.Parse(ReadSector(session, modeIndex, sector, sectorSize), buttonCount); }
+                catch (HidppErrorException) { }
+                slots.Add(new OnboardSlot(number++, sector, enabled, profile));
+            }
+            return new OnboardMemoryEvent(slots);
+        }
+        catch (HidppErrorException) { return null; }
+    }
+
+    /// <summary>memoryRead returns 16 bytes per call; the last read is pulled back so it stays inside the sector.</summary>
+    private static byte[] ReadSector(Session session, byte modeIndex, int sector, int size)
+    {
+        byte[] data = new byte[size];
+        for (int offset = 0; offset < size; offset += 16)
+        {
+            int at = Math.Min(offset, size - 16);
+            byte[] chunk = session.CallLong(modeIndex, 5, (byte)(sector >> 8), (byte)sector, (byte)(at >> 8), (byte)at);
+            Array.Copy(chunk, 0, data, at, Math.Min(16, chunk.Length));
+        }
+        return data;
+    }
+
     /// <summary>Main application firmware from DeviceInformation (0x0003): number, revision and build, shown as hex like G HUB.</summary>
     private static string? MouseFirmware(Session session)
     {
@@ -258,6 +306,17 @@ internal sealed class HidppBridge : IDisposable
             if (rate != 0) text.AppendLine($"  Report interval: {session.Call(rate, 1, 0, 0, 0)[0]} ms");
             text.AppendLine($"  Mouse firmware: {MouseFirmware(session) ?? "unknown"}");
             text.AppendLine($"  Receiver firmware: {ReceiverFirmware(session) ?? "unknown"}");
+            if (mode != 0 && ReadOnboard(session, mode) is { } onboard)
+                foreach (OnboardSlot slot in onboard.Slots)
+                {
+                    text.AppendLine($"  Slot {slot.Number} (sector {slot.Sector}, {(slot.Enabled ? "enabled" : "disabled")}): {slot.Profile?.Name ?? "unreadable"}"
+                        + (slot.Profile is { } p ? $" · {1000 / Math.Max(1, p.ReportIntervalMs)} Hz · DPI {string.Join("/", p.Dpis)} · default {p.DefaultDpiIndex + 1}, shift {p.ShiftDpiIndex + 1} · checksum {(p.ChecksumOk ? "ok" : "BAD")}" : ""));
+                    if (slot.Profile is { } profile)
+                    {
+                        text.AppendLine("    Buttons: " + string.Join(", ", profile.Buttons.Select(b => $"{b.Index + 1}={b.Description} [{b.Raw}]")));
+                        text.AppendLine("    G-shift: " + string.Join(", ", profile.ShiftButtons.Select(b => $"{b.Index + 1}={b.Description} [{b.Raw}]")));
+                    }
+                }
             Battery battery = Battery.Find(session);
             text.AppendLine($"  Battery ({(battery.Unified ? "UnifiedBattery 0x1004" : "BatteryStatus 0x1000")}): feature index {battery.Index}");
             if (battery.Read(session) is { } charge) text.AppendLine($"  Battery: {charge.Percent}%{(charge.Charging ? " charging" : "")}");
@@ -335,13 +394,27 @@ internal sealed class HidppBridge : IDisposable
         public byte[] Call(byte feature, byte function, byte a, byte b, byte c) =>
             Request(Slot, feature, (byte)((function << 4) | SoftwareId), a, b, c);
 
+        /// <summary>Long HID++ request, for calls that need more than three parameter bytes.</summary>
+        public byte[] CallLong(byte feature, byte function, params byte[] parameters)
+        {
+            byte[] request = new byte[20];
+            request[0] = 0x11;
+            request[1] = Slot;
+            request[2] = feature;
+            request[3] = (byte)((function << 4) | SoftwareId);
+            parameters.CopyTo(request, 4);
+            return Send(longDevice, request, Slot, feature, request[3]);
+        }
+
         /// <summary>Reads a HID++ 1.0 register (sub-id 0x81) of the receiver itself (device index 0xFF).</summary>
         public byte[] ReadReceiverRegister(byte address, byte a) => Request(ReceiverIndex, 0x81, address, a, 0, 0);
 
-        private byte[] Request(byte device, byte feature, byte functionSoftware, byte a, byte b, byte c)
+        private byte[] Request(byte device, byte feature, byte functionSoftware, byte a, byte b, byte c) =>
+            Send(shortDevice, [0x10, device, feature, functionSoftware, a, b, c], device, feature, functionSoftware);
+
+        private byte[] Send(HidDevice target, byte[] request, byte device, byte feature, byte functionSoftware)
         {
-            byte[] request = [0x10, device, feature, functionSoftware, a, b, c];
-            shortDevice.Write(request);
+            target.Write(request);
             Stopwatch clock = Stopwatch.StartNew();
             while (clock.ElapsedMilliseconds < 2000)
             {

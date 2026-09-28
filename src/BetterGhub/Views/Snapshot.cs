@@ -47,6 +47,10 @@ internal static class Snapshot
             await Settle();
             Save(window, Path.Combine(folder, $"macros-step{suffix}.png"));
         }
+        window.Navigate("Profiles");
+        window.FindPage<ProfilesPage>()?.ShowOnboard();
+        await Settle();
+        Save(window, Path.Combine(folder, $"profiles-onboard{suffix}.png"));
         window.Navigate("Assignments");
         window.FindPage<AssignmentsPage>()?.SelectControl("G4");
         await Settle();
