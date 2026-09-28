@@ -88,7 +88,7 @@ internal sealed class SensitivityPage : UserControl, IPage
             exact.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) ApplyExact(index, exact.Text); };
             exact.LostFocus += (_, _) => ApplyExact(index, exact.Text);
             stageTools.Children.Add(exact);
-            Button remove = Ui.Button("Remove", () => RemoveStage(index), "DangerBtn", "");
+            Button remove = Ui.DeleteButton("Remove", () => RemoveStage(index));
             remove.IsEnabled = profile.DpiStages.Count > 1;
             stageTools.Children.Add(remove.With(new Thickness(8, 0, 0, 0)));
         }

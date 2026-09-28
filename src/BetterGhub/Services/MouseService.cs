@@ -76,6 +76,26 @@ internal sealed class MouseService : IDisposable
         catch (Exception error) { Write("Could not save settings: " + error.Message); }
     }
 
+    public void ExportSettings(string path)
+    {
+        Settings.Export(path);
+        Write("Settings exported to " + path);
+    }
+
+    /// <summary>Replaces all profiles, macros and calibration with the file's. Throws when it can't be read.</summary>
+    public void ImportSettings(string path)
+    {
+        Settings imported = Settings.Import(path);
+        ReleaseAll();
+        engine.ResetSequences();
+        Settings.ReplaceWith(imported);
+        Save();
+        ApplyDeviceSettings();
+        Write("Settings imported from " + path);
+        StateChanged?.Invoke();
+        SettingsChanged?.Invoke();
+    }
+
     // ── Connection ────────────────────────────────────────────────────────────
 
     public static bool IsGHubRunning() =>
@@ -197,8 +217,8 @@ internal sealed class MouseService : IDisposable
         MouseControl? control = Settings.ControlFor(bit);
         Write($"{(down ? "▼" : "▲")} 0x{bit:x4}  {control?.Label ?? "unmapped"}", isButton: true);
         ButtonChanged?.Invoke(bit, down);
-        // Primary click is ignored while learning other controls so the UI stays clickable.
-        if (down && Learning is { } learning && !learning.IsWheel && (bit != 0x0001 || learning.Id == "G1"))
+        // Left and right click can't be learned by another control, so the UI stays clickable while learning.
+        if (down && Learning is { } learning && !learning.IsWheel && !MouseControls.IsFixedBit(bit))
         {
             FinishLearning(learning, bit);
             swallowRelease.Add(bit); // The calibration press must not also trigger its new assignment.

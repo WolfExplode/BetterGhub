@@ -287,17 +287,8 @@ internal sealed class MacrosPage : UserControl, IPage
 
     private Button DeleteButton(MacroDefinition current)
     {
-        Button delete = Ui.Button("", () => { }, "DangerBtn", "", "Delete macro");
-        delete.Padding = new Thickness(10, 8, 10, 8);
-        bool armed = false;
-        delete.Click += (_, _) =>
+        Button delete = Ui.DeleteButton("", () =>
         {
-            if (!armed)
-            {
-                armed = true;
-                delete.Content = Ui.Row(8, Ui.Glyph("", 12.5), Ui.Text("Click again to delete"));
-                return;
-            }
             foreach (MouseProfile profile in service.Settings.Profiles)
             {
                 foreach (int bit in profile.Assignments.Where(x => x.Value == current.Id).Select(x => x.Key).ToArray()) profile.Assignments.Remove(bit);
@@ -310,13 +301,8 @@ internal sealed class MacrosPage : UserControl, IPage
             selectedStep = -1;
             shell.ShowToast($"Deleted {current.Name}");
             Refresh();
-        };
-        delete.MouseLeave += (_, _) =>
-        {
-            if (!armed) return;
-            armed = false;
-            delete.Content = Ui.Glyph("", 12.5);
-        };
+        }, "Delete macro");
+        delete.Padding = new Thickness(10, 8, 10, 8);
         return delete;
     }
 
@@ -448,7 +434,7 @@ internal sealed class MacrosPage : UserControl, IPage
             IconButton("", "Move earlier", () => Move(-1), selectedStep > 0),
             IconButton("", "Move later", () => Move(1), selectedStep < macro.Steps.Count - 1),
             IconButton("", "Duplicate", Duplicate, true),
-            IconButton("", "Remove", Remove, true, danger: true));
+            StepDeleteButton());
         DockPanel.SetDock(tools, Dock.Right);
         head.Children.Add(tools);
         head.Children.Add(Ui.Text($"ACTION {selectedStep + 1} OF {macro.Steps.Count} · {KindName(step.Kind).ToUpperInvariant()}", "Overline").With(new Thickness(0, 8, 0, 0)));
@@ -563,11 +549,18 @@ internal sealed class MacrosPage : UserControl, IPage
         return panel;
     }
 
-    private Button IconButton(string glyph, string tip, Action click, bool enabled, bool danger = false)
+    private Button IconButton(string glyph, string tip, Action click, bool enabled)
     {
-        Button button = Ui.Button("", click, danger ? "DangerBtn" : "GhostBtn", glyph, tip);
+        Button button = Ui.Button("", click, "GhostBtn", glyph, tip);
         button.Padding = new Thickness(9, 7, 9, 7);
         button.IsEnabled = enabled;
+        return button;
+    }
+
+    private Button StepDeleteButton()
+    {
+        Button button = Ui.DeleteButton("", Remove, "Remove");
+        button.Padding = new Thickness(9, 7, 9, 7);
         return button;
     }
 

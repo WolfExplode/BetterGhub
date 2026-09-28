@@ -23,13 +23,13 @@ public static class MouseControls
     // and images/g502-x-lightspeed-mouse-profile-angle.png (1382×551).
     public static readonly IReadOnlyList<MouseControl> All =
     [
-        new("G1", "Primary click", "Left click", 0x0001, true, MouseView.Top, 380, 255, CalloutSide.Left, 0.13),
+        new("G1", "Primary click", "Left click", 0x0001, false, MouseView.Top, 380, 255, CalloutSide.Left, 0.13),
         new("G8", "G8", "DPI up", null, true, MouseView.Top, 262, 385, CalloutSide.Left, 0.27),
         new("TiltLeft", "Wheel tilt left", "Scroll left", RawMouseWheel.Left, true, MouseView.Top, 468, 440, CalloutSide.Left, 0.41),
         new("G7", "G7", "DPI down", null, true, MouseView.Top, 250, 485, CalloutSide.Left, 0.55),
         new("WheelDown", "Scroll down", "Scroll down", RawMouseWheel.Down, false, MouseView.Top, 573, 540, CalloutSide.Left, 0.69),
         new("WheelUp", "Scroll up", "Scroll up", RawMouseWheel.Up, false, MouseView.Top, 573, 335, CalloutSide.Right, 0.10),
-        new("G2", "Secondary click", "Right click", 0x0002, true, MouseView.Top, 760, 300, CalloutSide.Right, 0.24),
+        new("G2", "Secondary click", "Right click", 0x0002, false, MouseView.Top, 760, 300, CalloutSide.Right, 0.24),
         new("G3", "Middle click", "Middle click", 0x0004, true, MouseView.Top, 573, 440, CalloutSide.Right, 0.38),
         new("TiltRight", "Wheel tilt right", "Scroll right", RawMouseWheel.Right, true, MouseView.Top, 680, 440, CalloutSide.Right, 0.52),
         new("G9", "G9", "Profile / DPI cycle", null, true, MouseView.Top, 575, 765, CalloutSide.Right, 0.69),
@@ -40,8 +40,6 @@ public static class MouseControls
 
     public static MouseControl? ById(string? id) => All.FirstOrDefault(c => c.Id == id);
 
-    /// <summary>Order used by the calibration walkthrough.</summary>
-    public static IEnumerable<MouseControl> CalibrationOrder =>
-        new[] { "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "TiltLeft", "TiltRight" }
-            .Select(id => ById(id)!);
+    /// <summary>Bits that belong to controls with a fixed bit (left and right click are always bits 0 and 1).</summary>
+    public static bool IsFixedBit(int bit) => All.Any(c => !c.Calibratable && c.DefaultBit == bit);
 }

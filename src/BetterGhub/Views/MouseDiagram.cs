@@ -24,6 +24,8 @@ internal sealed class MouseDiagram : Viewbox
     public MouseView View { get; set; } = MouseView.Top;
     public MouseControl? Selected { get; set; }
     public bool ShiftLayer { get; set; }
+    /// <summary>Callouts show each control's signal instead of its action.</summary>
+    public bool CalibrationMode { get; set; }
     public event Action<MouseControl>? ControlClicked;
 
     public MouseDiagram(MouseService service)
@@ -143,10 +145,24 @@ internal sealed class MouseDiagram : Viewbox
                 Text = control.Label.ToUpperInvariant(), FontSize = 12.5, FontWeight = FontWeights.SemiBold,
                 FontFamily = Ui.Font("DisplayFont"), Foreground = Ui.Brush("Muted"), Margin = new Thickness(0, 0, 0, 2)
             };
-            title.Text = !calibrated ? "Not calibrated"
-                : assigned is not null ? settings.DescribeAssignment(assigned)
-                : owner.ShiftLayer ? "Same as default" : control.DefaultAction;
-            title.Foreground = !calibrated ? Ui.Brush("Warning") : assigned is not null ? Ui.Brush("Text") : Ui.Brush("Muted");
+            if (owner.CalibrationMode)
+            {
+                bool learning = owner.service.Learning?.Id == control.Id;
+                title.Text = learning ? "Press it now…"
+                    : !control.Calibratable ? "Fixed"
+                    : bit is int raw ? (raw >= Input.RawMouseWheel.Up ? "Wheel signal" : $"HID 0x{raw:x4}")
+                    : "Not calibrated";
+                title.Foreground = learning || !calibrated ? Ui.Brush("Warning") : control.Calibratable ? Ui.Brush("Text") : Ui.Brush("Faint");
+                assigned = null;
+                isMacro = false;
+            }
+            else
+            {
+                title.Text = !calibrated ? "Not calibrated"
+                    : assigned is not null ? settings.DescribeAssignment(assigned)
+                    : owner.ShiftLayer ? "Same as default" : control.DefaultAction;
+                title.Foreground = !calibrated ? Ui.Brush("Warning") : assigned is not null ? Ui.Brush("Text") : Ui.Brush("Muted");
+            }
             StackPanel titleRow = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = left ? HorizontalAlignment.Left : HorizontalAlignment.Right };
             if (isMacro) titleRow.Children.Add(Ui.MacroMark().With(new Thickness(0, 0, 8, 0)));
             else if (assigned is not null) titleRow.Children.Add(Ui.Glyph("", 12, "Accent").With(new Thickness(0, 0, 7, 0)));

@@ -141,7 +141,7 @@ internal sealed class ProfilesPage : UserControl, IPage
             actions.Children.Add(Ui.Button("Use now", () => { service.SelectProfile(profile); Refresh(); }, "Btn", ""));
         actions.Children.Add(CopyFromButton(profile).With(new Thickness(actions.Children.Count > 0 ? 8 : 0, 0, 0, 0)));
         if (!profile.IsDesktop)
-            actions.Children.Add(Ui.Button("Remove", () => Remove(profile), "DangerBtn", "").With(new Thickness(8, 0, 0, 0)));
+            actions.Children.Add(Ui.DeleteButton("Remove", () => Remove(profile)).With(new Thickness(8, 0, 0, 0)));
         DockPanel.SetDock(actions, Dock.Right);
         head.Children.Add(actions);
         TextBox name = new() { Text = profile.Name, Style = Ui.Style("TitleBox"), FontSize = 20, Margin = new Thickness(-6, 0, 16, 0) };
@@ -203,7 +203,6 @@ internal sealed class ProfilesPage : UserControl, IPage
 
     private void Remove(MouseProfile profile)
     {
-        if (MessageBox.Show(Window.GetWindow(this), $"Remove the {profile.Name} profile and its assignments?", "Remove profile", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
         bool wasActive = profile == service.ActiveProfile;
         service.Settings.Profiles.Remove(profile);
         if (wasActive) service.SelectProfile(service.Settings.Profiles.FirstOrDefault(p => p.IsDesktop) ?? service.Settings.Profiles[0]);

@@ -6,6 +6,7 @@ __pycache__/
 settings.json
 debug.log
 dist/
+.vs/
 # Local hardware captures
 docs/captures/
 # Third-party repositories cloned for reference

@@ -12,14 +12,14 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private readonly MainWindow shell;
     private readonly MouseDiagram diagram;
     private readonly StackPanel panel = new();
-    private readonly Border wizardBanner = new();
+    private readonly Border calibrationBanner = new();
+    private readonly DockPanel toolbar = new() { LastChildFill = false };
     private readonly RadioButton topView = new() { Content = "TOP", GroupName = "View" };
     private readonly RadioButton sideView = new() { Content = "SIDE", GroupName = "View" };
     private MouseControl selected = MouseControls.ById("G1")!;
     private string tab = "Macros";
     private string search = "";
-    private Queue<MouseControl>? wizard;
-    private int wizardTotal;
+    private bool calibrating;
 
     public AssignmentsPage(MouseService service, MainWindow shell)
     {
@@ -42,22 +42,23 @@ internal sealed class AssignmentsPage : UserControl, IPage
         Grid.SetColumn(stage, 1);
         layout.Children.Add(stage);
 
-        DockPanel toolbar = new() { LastChildFill = false };
-        Button calibrateAll = Ui.Button("Calibrate buttons", StartWizard, "Btn", "", "Walk through each control and press it once");
-        DockPanel.SetDock(calibrateAll, Dock.Right);
-        toolbar.Children.Add(calibrateAll);
-        toolbar.Children.Add(Ui.Text("Click a control to change what it does. Pressed buttons light up.", "Body").With(new Thickness(2, 8, 0, 0)));
         stage.Children.Add(toolbar);
 
         Grid.SetRow(diagram, 1);
         stage.Children.Add(diagram);
 
-        wizardBanner.Visibility = Visibility.Collapsed;
-        wizardBanner.VerticalAlignment = VerticalAlignment.Top;
-        wizardBanner.HorizontalAlignment = HorizontalAlignment.Center;
-        wizardBanner.Margin = new Thickness(0, 14, 0, 0);
-        Grid.SetRow(wizardBanner, 1);
-        stage.Children.Add(wizardBanner);
+        calibrationBanner.Visibility = Visibility.Collapsed;
+        calibrationBanner.VerticalAlignment = VerticalAlignment.Top;
+        calibrationBanner.HorizontalAlignment = HorizontalAlignment.Center;
+        calibrationBanner.Margin = new Thickness(0, 14, 0, 0);
+        calibrationBanner.Background = Ui.Brush("Surface2");
+        calibrationBanner.BorderBrush = Ui.Brush("Warning");
+        calibrationBanner.BorderThickness = new Thickness(1);
+        calibrationBanner.CornerRadius = new CornerRadius(12);
+        calibrationBanner.Padding = new Thickness(18, 12, 18, 12);
+        calibrationBanner.Child = Ui.Text("Click a control, then press it on your mouse. Left click, right click and the scroll wheel are fixed.", size: 13, color: "Text");
+        Grid.SetRow(calibrationBanner, 1);
+        stage.Children.Add(calibrationBanner);
 
         topView.Style = Ui.Style("Segment");
         sideView.Style = Ui.Style("Segment");
@@ -71,15 +72,31 @@ internal sealed class AssignmentsPage : UserControl, IPage
         Content = layout;
 
         service.ButtonChanged += OnButton;
-        service.Calibrated += (_, _) => AdvanceWizard();
+        service.Calibrated += (control, _) => { if (calibrating && IsVisible) shell.ShowToast($"{control.Label} calibrated"); Refresh(); };
+        IsVisibleChanged += (_, _) => { if (!IsVisible && calibrating) SetCalibrating(false); };
         service.StateChanged += () => { if (IsLoaded) RenderPanel(); };
         Refresh();
     }
 
     public void Refresh()
     {
+        diagram.CalibrationMode = calibrating;
         diagram.Rebuild();
+        RenderToolbar();
         RenderPanel();
+    }
+
+    private void RenderToolbar()
+    {
+        toolbar.Children.Clear();
+        Button toggle = calibrating
+            ? Ui.Button("Done", () => SetCalibrating(false), "PrimaryBtn", "")
+            : Ui.Button("Calibrate buttons", () => SetCalibrating(true), "Btn", "", "Click a control, then press it on the mouse");
+        DockPanel.SetDock(toggle, Dock.Right);
+        toolbar.Children.Add(toggle);
+        toolbar.Children.Add(Ui.Text(calibrating
+            ? "Calibrating. Pick a control, then press that button on your mouse."
+            : "Click a control to change what it does. Pressed buttons light up.", "Body", color: calibrating ? "Warning" : null).With(new Thickness(2, 8, 0, 0)));
     }
 
     private void OnButton(int bit, bool down)
@@ -87,14 +104,18 @@ internal sealed class AssignmentsPage : UserControl, IPage
         if (bit >= Input.RawMouseWheel.Up) { if (down) diagram.Pulse(bit); return; }
         diagram.SetPressed(bit, down);
         if (down && service.Learning is null && service.Settings.ControlFor(bit) is null && IsVisible)
-            shell.ShowToast($"Unmapped button 0x{bit:x4}. Use Calibrate buttons to name it.");
+            shell.ShowToast(calibrating
+                ? $"Unmapped button 0x{bit:x4}. Click the control it belongs to, then press it again."
+                : $"Unmapped button 0x{bit:x4}. Use Calibrate buttons to name it.");
     }
 
     private void Select(MouseControl control)
     {
         selected = control;
         diagram.Selected = control;
-        if (service.Learning is not null && wizard is null) service.CancelLearning();
+        if (calibrating && control.Calibratable) service.StartLearning(control);
+        else if (service.Learning is not null) service.CancelLearning();
+        if (calibrating && !control.Calibratable) shell.ShowToast($"{control.Label} is fixed and doesn't need calibrating");
         Refresh();
     }
 
@@ -144,20 +165,18 @@ internal sealed class AssignmentsPage : UserControl, IPage
         panel.Children.Add(Ui.Text(selected.Label, "H2"));
         string detail = bit is int b
             ? (selected.IsWheel ? $"Wheel · default {selected.DefaultAction.ToLowerInvariant()}" : $"HID 0x{b:x4} · default {selected.DefaultAction.ToLowerInvariant()}")
-            : "Not calibrated yet";
-        panel.Children.Add(Ui.Text(detail, "Body", size: 12, color: bit is null ? "Warning" : "Muted").With(new Thickness(0, 3, 0, 12)));
+            : "Not calibrated yet. Use Calibrate buttons to set it.";
+        panel.Children.Add(Ui.Text(detail, "Body", size: 12, color: bit is null ? "Warning" : "Muted", wrap: true).With(new Thickness(0, 3, 0, 12)));
 
         if (service.Learning?.Id == selected.Id)
         {
             panel.Children.Add(LearningBox());
         }
-        else if (selected.Calibratable)
+        else if (calibrating && service.Settings.ControlBits.ContainsKey(selected.Id))
         {
-            StackPanel calibration = Ui.Row(8,
-                Ui.Button(bit is null ? "Learn button" : "Re-learn", () => service.StartLearning(selected), bit is null ? "PrimaryBtn" : "Btn", ""));
-            if (service.Settings.ControlBits.ContainsKey(selected.Id))
-                calibration.Children.Add(Ui.Button("Reset", () => { service.ForgetCalibration(selected); Refresh(); }, "GhostBtn").With(new Thickness(8, 0, 0, 0)));
-            panel.Children.Add(calibration);
+            Button reset = Ui.Button("Reset to default", () => { service.ForgetCalibration(selected); Refresh(); }, "GhostBtn");
+            reset.HorizontalAlignment = HorizontalAlignment.Left;
+            panel.Children.Add(reset);
         }
         if (bit is null) return;
 
@@ -302,55 +321,22 @@ internal sealed class AssignmentsPage : UserControl, IPage
         content.Children.Add(Ui.Text(selected.Id is "TiltLeft" or "TiltRight"
             ? "Push the wheel sideways once."
             : "Press and release it once. Other buttons are ignored except the one you press.", "Body", size: 12).With(new Thickness(26, 4, 0, 10)));
-        content.Children.Add(Ui.Button("Cancel", () => { wizard = null; wizardBanner.Visibility = Visibility.Collapsed; service.CancelLearning(); Refresh(); }, "Btn")
+        content.Children.Add(Ui.Button("Cancel", () => { service.CancelLearning(); Refresh(); }, "Btn")
             .With(new Thickness(26, 0, 0, 0)));
         ((Button)content.Children[^1]).HorizontalAlignment = HorizontalAlignment.Left;
         return new Border { Background = Ui.Brush("WarningDim"), CornerRadius = new CornerRadius(10), Padding = new Thickness(14), Margin = new Thickness(0, 0, 8, 0), Child = content };
     }
 
-    private void StartWizard()
+    private void SetCalibrating(bool on)
     {
-        if (service.State != ConnectionState.Connected)
+        if (on && service.State != ConnectionState.Connected)
         {
             shell.ShowToast("Connect the mouse first");
             return;
         }
-        wizard = new Queue<MouseControl>(MouseControls.CalibrationOrder.Where(c => c.Id != "G1"));
-        wizardTotal = wizard.Count;
-        AdvanceWizard();
-    }
-
-    private void AdvanceWizard()
-    {
-        if (wizard is null) { Refresh(); return; }
-        if (wizard.Count == 0)
-        {
-            wizard = null;
-            wizardBanner.Visibility = Visibility.Collapsed;
-            shell.ShowToast("All buttons calibrated");
-            Refresh();
-            return;
-        }
-        MouseControl next = wizard.Dequeue();
-        selected = next;
-        diagram.Selected = next;
-        ShowView(next.View);
-        service.StartLearning(next);
-        int step = wizardTotal - wizard.Count;
-
-        Button skip = Ui.Button("Skip", AdvanceWizard, "Btn");
-        Button stop = Ui.Button("Stop", () => { wizard = null; wizardBanner.Visibility = Visibility.Collapsed; service.CancelLearning(); Refresh(); }, "GhostBtn");
-        wizardBanner.Child = Ui.Row(14,
-            Ui.Text($"{step} / {wizardTotal}", size: 12, color: "Muted", bold: true),
-            Ui.Text($"Press  {next.Label}", size: 15, bold: true),
-            skip, stop);
-        foreach (FrameworkElement child in ((StackPanel)wizardBanner.Child).Children) child.VerticalAlignment = VerticalAlignment.Center;
-        wizardBanner.Background = Ui.Brush("Surface2");
-        wizardBanner.BorderBrush = Ui.Brush("Warning");
-        wizardBanner.BorderThickness = new Thickness(1);
-        wizardBanner.CornerRadius = new CornerRadius(12);
-        wizardBanner.Padding = new Thickness(18, 10, 12, 10);
-        wizardBanner.Visibility = Visibility.Visible;
+        calibrating = on;
+        if (service.Learning is not null) service.CancelLearning();
+        calibrationBanner.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         Refresh();
     }
 }

@@ -47,6 +47,34 @@ internal static class Ui
         return button;
     }
 
+    /// <summary>
+    /// The one delete control: a danger button that asks "Click again to delete" before running <paramref name="delete"/>.
+    /// Moving the pointer or focus away disarms it.
+    /// </summary>
+    public static Button DeleteButton(string text, Action delete, string? tooltip = null)
+    {
+        Button button = Button(text, () => { }, "DangerBtn", "", tooltip);
+        object idle = button.Content;
+        bool armed = false;
+        button.Click += (_, _) =>
+        {
+            if (armed) { delete(); return; }
+            armed = true;
+            TextBlock prompt = Text("Click again to delete");
+            prompt.VerticalAlignment = VerticalAlignment.Center;
+            button.Content = Row(8, Glyph("", 12.5), prompt);
+        };
+        void Disarm()
+        {
+            if (!armed) return;
+            armed = false;
+            button.Content = idle;
+        }
+        button.MouseLeave += (_, _) => Disarm();
+        button.LostKeyboardFocus += (_, _) => Disarm();
+        return button;
+    }
+
     public static StackPanel Row(double spacing, params UIElement[] children)
     {
         StackPanel panel = new() { Orientation = Orientation.Horizontal };

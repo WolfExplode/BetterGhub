@@ -15,6 +15,7 @@ internal sealed class DevicePage : UserControl, IPage
     private readonly WrapPanel lamps = new();
     private readonly ListBox log = new();
     private readonly Dictionary<string, Border> lampsById = [];
+    private readonly Dictionary<string, System.Windows.Threading.DispatcherTimer> wheelTimers = [];
 
     public DevicePage(MouseService service)
     {
@@ -70,12 +71,19 @@ internal sealed class DevicePage : UserControl, IPage
         {
             MouseControl? control = service.Settings.ControlFor(bit);
             if (control is null || !lampsById.TryGetValue(control.Id, out Border? lamp)) return;
-            lamp.Background = down ? Ui.Brush("Accent") : Ui.Brush("Surface2");
-            ((TextBlock)lamp.Child).Foreground = down ? Ui.Brush("OnAccent") : Ui.Brush("Muted");
-            if (bit >= Input.RawMouseWheel.Up && down)
+            bool pulse = bit >= Input.RawMouseWheel.Up;
+            if (pulse && !down) return; // Wheel pulses release instantly; the timer below turns the lamp off.
+            SetLamp(lamp, down);
+            if (pulse)
             {
-                System.Windows.Threading.DispatcherTimer off = new() { Interval = TimeSpan.FromMilliseconds(150) };
-                off.Tick += (_, _) => { off.Stop(); lamp.Background = Ui.Brush("Surface2"); ((TextBlock)lamp.Child).Foreground = Ui.Brush("Muted"); };
+                if (!wheelTimers.TryGetValue(control.Id, out System.Windows.Threading.DispatcherTimer? off))
+                {
+                    off = new() { Interval = TimeSpan.FromMilliseconds(180) };
+                    string id = control.Id;
+                    off.Tick += (_, _) => { wheelTimers[id].Stop(); if (lampsById.TryGetValue(id, out Border? current)) SetLamp(current, false); };
+                    wheelTimers[control.Id] = off;
+                }
+                off.Stop();
                 off.Start();
             }
         };
@@ -102,6 +110,12 @@ internal sealed class DevicePage : UserControl, IPage
             lamps.Children.Add(lamp);
         }
         if (log.Items.Count > 0) log.ScrollIntoView(log.Items[^1]);
+    }
+
+    private static void SetLamp(Border lamp, bool on)
+    {
+        lamp.Background = on ? Ui.Brush("Accent") : Ui.Brush("Surface2");
+        ((TextBlock)lamp.Child).Foreground = on ? Ui.Brush("OnAccent") : Ui.Brush("Muted");
     }
 
     private static string Format(LogEntry entry) => $"{entry.Time:HH:mm:ss.fff}  {entry.Text}";
@@ -222,6 +236,28 @@ internal sealed class DevicePage : UserControl, IPage
         }, "Btn", "");
         open.HorizontalAlignment = HorizontalAlignment.Left;
         panel.Children.Add(open.With(new Thickness(0, 6, 0, 0)));
+        panel.Children.Add(Ui.Row(8, Ui.Button("Export settings…", ExportSettings, "Btn", ""), Ui.Button("Import settings…", ImportSettings, "Btn", "")).With(new Thickness(0, 10, 0, 0)));
+        panel.Children.Add(Ui.Text("Export saves profiles, macros, assignments and calibration to a file. Import replaces all of them.", "Body", size: 12).With(new Thickness(0, 8, 0, 0)));
         return panel;
+    }
+
+    private const string SettingsFilter = "BetterGhub settings (*.json)|*.json|All files (*.*)|*.*";
+
+    private void ExportSettings()
+    {
+        Microsoft.Win32.SaveFileDialog dialog = new() { Filter = SettingsFilter, FileName = $"BetterGhub settings {DateTime.Now:yyyy-MM-dd}.json", DefaultExt = ".json" };
+        if (dialog.ShowDialog(Window.GetWindow(this)) != true) return;
+        try { service.ExportSettings(dialog.FileName); }
+        catch (Exception error) { MessageBox.Show(Window.GetWindow(this), error.Message, "Could not export settings", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void ImportSettings()
+    {
+        Microsoft.Win32.OpenFileDialog dialog = new() { Filter = SettingsFilter };
+        if (dialog.ShowDialog(Window.GetWindow(this)) != true) return;
+        if (MessageBox.Show(Window.GetWindow(this), "Importing replaces all your profiles, macros, assignments and calibration. Continue?", "Import settings",
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        try { service.ImportSettings(dialog.FileName); }
+        catch (Exception error) { MessageBox.Show(Window.GetWindow(this), $"{Path.GetFileName(dialog.FileName)} isn't a readable settings file ({error.Message}). Nothing was changed.", "Could not import settings", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 }

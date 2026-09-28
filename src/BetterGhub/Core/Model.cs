@@ -83,9 +83,7 @@ public sealed class Settings
         Settings settings;
         try
         {
-            settings = File.Exists(FilePath)
-                ? JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath), JsonOptions) ?? new Settings()
-                : new Settings();
+            settings = File.Exists(FilePath) ? Read(FilePath) : new Settings();
         }
         catch (Exception error)
         {
@@ -97,6 +95,32 @@ public sealed class Settings
         }
         settings.Normalize();
         return settings;
+    }
+
+    private static Settings Read(string path) =>
+        JsonSerializer.Deserialize<Settings>(File.ReadAllText(path), JsonOptions) ?? new Settings();
+
+    /// <summary>Reads settings exported by <see cref="Export"/>. Throws when the file is not a settings file.</summary>
+    public static Settings Import(string path)
+    {
+        Settings settings = Read(path);
+        settings.Normalize();
+        return settings;
+    }
+
+    public void Export(string path) => File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+
+    /// <summary>Replaces this configuration with <paramref name="other"/>'s, keeping local-only state like hints.</summary>
+    public void ReplaceWith(Settings other)
+    {
+        Profiles = other.Profiles;
+        Macros = other.Macros;
+        ControlBits = other.ControlBits;
+        ActiveProfileId = other.ActiveProfileId;
+        SuppressStandardActions = other.SuppressStandardActions;
+        AutoConnect = other.AutoConnect;
+        AutoSwitchProfiles = other.AutoSwitchProfiles;
+        CloseToTray = other.CloseToTray;
     }
 
     private void Normalize()
@@ -125,7 +149,7 @@ public sealed class Settings
     }
 
     public int? BitFor(MouseControl control) =>
-        ControlBits.TryGetValue(control.Id, out int bit) ? bit : control.DefaultBit;
+        control.Calibratable && ControlBits.TryGetValue(control.Id, out int bit) ? bit : control.DefaultBit;
 
     public MouseControl? ControlFor(int bit) =>
         MouseControls.All.FirstOrDefault(c => BitFor(c) == bit);
