@@ -23,6 +23,8 @@ internal sealed class MouseService : IDisposable
     private readonly Dictionary<int, string> pressedAssignments = [];
     private readonly HashSet<int> pressed = [];
     private readonly HashSet<int> swallowRelease = [];
+    /// <summary>What to do when a button holding a key or mouse button is released, by trigger bit.</summary>
+    private readonly Dictionary<int, Action> heldOutputs = [];
     private MouseHook? hook;
     private bool dpiShiftHeld;
     private bool disposed;
@@ -146,6 +148,7 @@ internal sealed class MouseService : IDisposable
         dpiShiftHeld = false;
         GShiftHeld = false;
         pressedAssignments.Clear();
+        foreach (int bit in heldOutputs.Keys.ToArray()) ReleaseOutput(bit);
         foreach (int bit in pressed.ToArray()) { pressed.Remove(bit); ButtonChanged?.Invoke(bit, false); }
         engine.StopAll();
     }
@@ -312,11 +315,88 @@ internal sealed class MouseService : IDisposable
             case BuiltinActions.GShift:
                 return; // G-Shift on the shift layer itself has no meaning.
         }
+        try
+        {
+            if (RunDirect(bit, down, pulse, assignment)) return;
+        }
+        catch (Exception error)
+        {
+            Write($"{Settings.DescribeAssignment(assignment)} failed: {error.Message}");
+            return;
+        }
         if (Settings.Macros.FirstOrDefault(m => m.Id == assignment) is { } macro)
         {
             try { engine.Handle(bit, down, macro, pulse); }
             catch (Exception error) { Write("Macro error: " + error.Message); }
         }
+    }
+
+    /// <summary>Keys, mouse buttons, scrolling and launches. Returns false when the assignment is something else.</summary>
+    private bool RunDirect(int bit, bool down, bool pulse, string assignment)
+    {
+        if (Assignments.KeyCombo(assignment) is { } combo)
+        {
+            List<ushort> keys = InputSender.ParseCombo(combo);
+            Hold(bit, down, pulse, () => InputSender.PressCombo(keys), () => InputSender.ReleaseCombo(keys));
+            return true;
+        }
+        if (Assignments.LaunchPath(assignment) is { } path)
+        {
+            if (!down) return true;
+            if (!File.Exists(path)) throw new FileNotFoundException("Application not found", path);
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(path) ?? "" });
+            return true;
+        }
+        int button = assignment switch
+        {
+            BuiltinActions.LeftClick => 0,
+            BuiltinActions.RightClick => 1,
+            BuiltinActions.MiddleClick => 2,
+            BuiltinActions.Back => 3,
+            BuiltinActions.Forward => 4,
+            _ => -1
+        };
+        if (button >= 0)
+        {
+            Hold(bit, down, pulse, () => InputSender.MouseButton(button, up: false), () => InputSender.MouseButton(button, up: true));
+            return true;
+        }
+        if (!down) return assignment is BuiltinActions.DoubleClick or BuiltinActions.ScrollUp or BuiltinActions.ScrollDown
+            or BuiltinActions.ScrollLeft or BuiltinActions.ScrollRight or BuiltinActions.LockScreen;
+        switch (assignment)
+        {
+            case BuiltinActions.DoubleClick: InputSender.LeftClick(); InputSender.LeftClick(); return true;
+            case BuiltinActions.ScrollUp: InputSender.Wheel(1); return true;
+            case BuiltinActions.ScrollDown: InputSender.Wheel(-1); return true;
+            case BuiltinActions.ScrollLeft: InputSender.HorizontalWheel(-1); return true;
+            case BuiltinActions.ScrollRight: InputSender.HorizontalWheel(1); return true;
+            case BuiltinActions.LockScreen: _ = LockWorkStation(); return true;
+        }
+        return false;
+    }
+
+    /// <summary>Holds an output for as long as the button is held, like G HUB; wheel pulses tap it.</summary>
+    private void Hold(int bit, bool down, bool pulse, Action press, Action release)
+    {
+        if (pulse)
+        {
+            press();
+            release();
+        }
+        else if (down)
+        {
+            if (heldOutputs.ContainsKey(bit)) return;
+            press();
+            heldOutputs[bit] = release;
+        }
+        else ReleaseOutput(bit);
+    }
+
+    private void ReleaseOutput(int bit)
+    {
+        if (!heldOutputs.Remove(bit, out Action? release)) return;
+        try { release(); }
+        catch (Exception error) { Write("Could not release input: " + error.Message); }
     }
 
     public void TestMacro(MacroDefinition macro) => engine.PlayOnce(macro);
@@ -418,5 +498,6 @@ internal sealed class MouseService : IDisposable
     }
 
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool LockWorkStation();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
 }

@@ -277,6 +277,34 @@
             </Setter.Value>
         </Setter>
     </Style>
+    <!-- Underlined text tab (assignment categories) -->
+    <Style x:Key="TextTab" TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFont}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="Margin" Value="0,0,16,6"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <StackPanel Background="Transparent">
+                        <ContentPresenter/>
+                        <Border x:Name="Underline" Height="2" Margin="0,3,0,0" CornerRadius="1" Background="Transparent"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                            <Setter TargetName="Underline" Property="Background" Value="{StaticResource Accent}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
     <Style x:Key="SegmentHost" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource Surface}"/>
         <Setter Property="CornerRadius" Value="9"/>
@@ -348,7 +376,7 @@
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="CaretBrush" Value="{StaticResource Text}"/>
         <Setter Property="SelectionBrush" Value="{StaticResource Accent}"/>
-        <Setter Property="Padding" Value="10,7"/>
+        <Setter Property="Padding" Value="20,14"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -357,7 +385,7 @@
                 <ControlTemplate TargetType="TextBox">
                     <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8">
-                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" Focusable="False"
+                        <ScrollViewer x:Name="PART_ContentHost" Focusable="False"
                                       HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -380,7 +408,7 @@
         <Setter Property="FontFamily" Value="{StaticResource DisplayFont}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="FontSize" Value="24"/>
-        <Setter Property="Padding" Value="6,2"/>
+        <Setter Property="Padding" Value="12,4"/>
     </Style>
 
     <!-- Toggle switch -->
@@ -477,6 +505,49 @@
                             CornerRadius="6" Padding="9,5">
                         <ContentPresenter/>
                     </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ── Context menu ────────────────────────────────────────────────────── -->
+    <Style TargetType="ContextMenu">
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="HasDropShadow" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Border Background="{StaticResource Surface2}" BorderBrush="{StaticResource LineStrong}" BorderThickness="1"
+                            CornerRadius="8" Padding="4" MinWidth="170">
+                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="MenuItem">
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Border x:Name="Bd" Background="Transparent" CornerRadius="5" Padding="10,7">
+                        <StackPanel Orientation="Horizontal">
+                            <ContentPresenter x:Name="Icon" ContentSource="Icon" Width="16" Margin="0,0,10,0" VerticalAlignment="Center"
+                                              TextElement.Foreground="{StaticResource Muted}"/>
+                            <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource Hover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{StaticResource Faint}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

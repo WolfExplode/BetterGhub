@@ -115,7 +115,7 @@ internal static class Ui
     /// <summary>Wraps a text box with a search glyph and placeholder text.</summary>
     public static Grid Placeholder(TextBox box, string placeholder)
     {
-        box.Padding = new Thickness(32, 7, 10, 7);
+        box.Padding = new Thickness(32, 14, 20, 14);
         TextBlock hint = new() { Text = placeholder, Foreground = Brush("Faint"), Margin = new Thickness(34, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
         TextBlock icon = Glyph("\uE721", 12, "Faint");
         icon.Margin = new Thickness(12, 0, 0, 0);

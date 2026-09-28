@@ -18,7 +18,7 @@ internal sealed class MacrosPage : UserControl, IPage
     private readonly MainWindow shell;
     private readonly StackPanel list = new();
     private readonly ContentControl editorHost = new() { Focusable = false };
-    private readonly TextBox search = new() { Margin = new Thickness(0, 0, 0, 12) };
+    private readonly TextBox search = new() { Margin = new Thickness(0, 0, 8, 12) };
     private MacroDefinition? macro;
     private int selectedStep = -1;
     private WrapPanel? timeline;
@@ -36,7 +36,7 @@ internal sealed class MacrosPage : UserControl, IPage
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         DockPanel side = new();
-        DockPanel head = new() { Margin = new Thickness(0, 0, 0, 14) };
+        DockPanel head = new() { Margin = new Thickness(0, 0, 8, 14) };
         Button add = Ui.Button("New", CreateMacro, "PrimaryBtn", "");
         add.Padding = new Thickness(12, 6, 12, 6);
         DockPanel.SetDock(add, Dock.Right);
@@ -215,7 +215,7 @@ internal sealed class MacrosPage : UserControl, IPage
         StackPanel options = new() { Margin = new Thickness(0, 22, 0, 0), MaxWidth = 560, HorizontalAlignment = HorizontalAlignment.Left };
         options.Children.Add(Ui.Text("TIMING", "Overline"));
         CheckBox standard = new() { Style = Ui.Style("Switch"), IsChecked = current.StandardDelayMs.HasValue };
-        TextBox delayBox = new() { Text = (current.StandardDelayMs ?? 50).ToString(), Width = 64, Padding = new Thickness(8, 4, 8, 4), IsEnabled = current.StandardDelayMs.HasValue };
+        TextBox delayBox = new() { Text = (current.StandardDelayMs ?? 50).ToString(), Width = 64, Padding = new Thickness(16, 8, 16, 8), IsEnabled = current.StandardDelayMs.HasValue };
         StackPanel standardLabel = new()
         {
             Children =
@@ -568,7 +568,11 @@ internal sealed class MacrosPage : UserControl, IPage
     {
         if (macro is null || timeline is null || selectedStep < 0 || selectedStep >= timeline.Children.Count - 1) return;
         int index = selectedStep;
-        timeline.Children[index] = StepChips.Build(macro.Steps[index], () => { selectedStep = index; RenderTimeline(); }, true);
+        MacroStep step = macro.Steps[index];
+        // UIElementCollection's indexer setter throws if the slot is occupied, so swap via remove + insert.
+        timeline.Children.RemoveAt(index);
+        timeline.Children.Insert(index, StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, true,
+            faded: macro.StandardDelayMs.HasValue && step.Kind == ActionKind.Delay));
     }
 
     private void Move(int delta)

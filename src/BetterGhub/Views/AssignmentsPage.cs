@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using BetterGhub.Core;
+using BetterGhub.Input;
 using BetterGhub.Services;
 
 namespace BetterGhub.Views;
@@ -17,7 +18,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private readonly RadioButton topView = new() { Content = "TOP", GroupName = "View" };
     private readonly RadioButton sideView = new() { Content = "SIDE", GroupName = "View" };
     private MouseControl selected = MouseControls.ById("G1")!;
-    private string tab = "Macros";
+    private string tab = "Commands";
+    private string tabKey = "";
     private string search = "";
     private bool calibrating;
 
@@ -27,9 +29,11 @@ internal sealed class AssignmentsPage : UserControl, IPage
         this.shell = shell;
         diagram = new MouseDiagram(service) { Selected = selected, Margin = new Thickness(0, 0, 0, 10) };
         diagram.ControlClicked += Select;
+        diagram.AssignmentDropped += AssignDropped;
+        diagram.ResetRequested += ResetControl;
 
         Grid layout = new() { Margin = new Thickness(36, 8, 36, 28) };
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(350) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         Border left = Ui.Card(Ui.Scroll(panel), new Thickness(22, 20, 14, 20));
@@ -96,7 +100,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         toolbar.Children.Add(toggle);
         toolbar.Children.Add(Ui.Text(calibrating
             ? "Calibrating. Pick a control, then press that button on your mouse."
-            : "Click a control to change what it does. Pressed buttons light up.", "Body", color: calibrating ? "Warning" : null).With(new Thickness(2, 8, 0, 0)));
+            : "Click a control or drag an action onto it. Right-click to reset.", "Body", color: calibrating ? "Warning" : null).With(new Thickness(2, 8, 0, 0)));
     }
 
     private void OnButton(int bit, bool down)
@@ -117,6 +121,41 @@ internal sealed class AssignmentsPage : UserControl, IPage
         else if (service.Learning is not null) service.CancelLearning();
         if (calibrating && !control.Calibratable) shell.ShowToast($"{control.Label} is fixed and doesn't need calibrating");
         Refresh();
+    }
+
+    private void AssignDropped(MouseControl control, string id)
+    {
+        if (service.Settings.BitFor(control) is not int bit) return;
+        if (id == BuiltinActions.GShift && diagram.ShiftLayer) { shell.ShowToast("G-Shift can't be assigned on the G-Shift layer"); return; }
+        if (id == BuiltinActions.DpiShift && control.IsWheel) { shell.ShowToast("DPI Shift can't be assigned to the wheel"); return; }
+        service.Assign(diagram.ShiftLayer, bit, id);
+        shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(id)}");
+        Refresh();
+    }
+
+    private void ResetControl(MouseControl control)
+    {
+        if (service.Settings.BitFor(control) is not int bit) return;
+        service.Assign(diagram.ShiftLayer, bit, null);
+        shell.ShowToast(diagram.ShiftLayer ? $"{control.Label} uses its Default layer action" : $"{control.Label} reset to {control.DefaultAction.ToLowerInvariant()}");
+        Refresh();
+    }
+
+    /// <summary>Lets an option row be dragged onto a control in the diagram to assign it.</summary>
+    private static void MakeDraggable(RadioButton row, string id)
+    {
+        Point? start = null;
+        row.PreviewMouseLeftButtonDown += (_, e) => start = e.GetPosition(row);
+        row.PreviewMouseMove += (_, e) =>
+        {
+            if (start is not Point origin || e.LeftButton != System.Windows.Input.MouseButtonState.Pressed) { start = null; return; }
+            Vector moved = e.GetPosition(row) - origin;
+            if (Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            start = null;
+            // Release the button's capture so the drop doesn't also count as a click on the row.
+            row.ReleaseMouseCapture();
+            DragDrop.DoDragDrop(row, new DataObject(MouseDiagram.DragFormat, id), DragDropEffects.Copy);
+        };
     }
 
     internal void SelectControl(string id)
@@ -184,23 +223,36 @@ internal sealed class AssignmentsPage : UserControl, IPage
         panel.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 22, 0, 8)));
         Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
         string current = bindings.GetValueOrDefault(bit.Value) ?? "";
-        bool builtinSelected = BuiltinActions.IsBuiltin(current);
-        if (current.Length > 0) tab = builtinSelected ? "Functions" : "Macros";
+        string key = selected.Id + (diagram.ShiftLayer ? "/shift" : "");
+        if (key != tabKey)
+        {
+            tabKey = key;
+            search = "";
+            if (TabFor(current) is { } assignedTab) tab = assignedTab;
+        }
+
+        WrapPanel tabs = new() { Margin = new Thickness(0, 0, 8, 8) };
+        foreach (string name in Tabs)
+        {
+            RadioButton item = new() { Content = name.ToUpperInvariant(), Style = Ui.Style("TextTab"), GroupName = "AssignTab", IsChecked = tab == name };
+            item.Checked += (_, _) => { if (tab == name) return; tab = name; search = ""; RenderPanel(); };
+            tabs.Children.Add(item);
+        }
+        panel.Children.Add(tabs);
 
         StackPanel options = new();
-        RadioButton macrosTab = new() { Content = "Macros", Style = Ui.Style("Segment"), GroupName = "AssignTab", IsChecked = tab == "Macros" };
-        RadioButton functionsTab = new() { Content = "Mouse functions", Style = Ui.Style("Segment"), GroupName = "AssignTab", IsChecked = tab == "Functions" };
-        macrosTab.Checked += (_, _) => { tab = "Macros"; RenderOptions(options, bit.Value, current); };
-        functionsTab.Checked += (_, _) => { tab = "Functions"; RenderOptions(options, bit.Value, current); };
-        panel.Children.Add(new Border { Style = Ui.Style("SegmentHost"), Child = Ui.Row(2, macrosTab, functionsTab), Margin = new Thickness(0, 0, 0, 10) });
-
-        // Default row is always first so "undo" is obvious.
-        panel.Children.Add(OptionRow(null, current.Length == 0,
-            diagram.ShiftLayer ? "Same as Default layer" : "Default action",
-            diagram.ShiftLayer ? "No G-Shift override" : selected.DefaultAction, bit.Value));
+        TextBox filter = new() { Text = search, Margin = new Thickness(0, 0, 8, 10) };
+        filter.TextChanged += (_, _) => { search = filter.Text; RenderOptions(options, bit.Value, current, bindings); };
+        panel.Children.Add(Ui.Placeholder(filter, tab switch
+        {
+            "Commands" => "Search for a command",
+            "Keys" => "Search for a key",
+            "Macros" => "Search for a macro",
+            _ => "Search for a system control"
+        }));
 
         panel.Children.Add(options);
-        RenderOptions(options, bit.Value, current);
+        RenderOptions(options, bit.Value, current, bindings);
 
         if (selected.CanBlockDefault && !diagram.ShiftLayer)
         {
@@ -222,53 +274,174 @@ internal sealed class AssignmentsPage : UserControl, IPage
         }
     }
 
-    private void RenderOptions(StackPanel options, int bit, string current)
+    private static readonly string[] Tabs = ["Commands", "Keys", "Macros", "System"];
+
+    /// <summary>The tab that lists <paramref name="id"/>, or null when nothing is assigned.</summary>
+    private string? TabFor(string id)
+    {
+        if (id.Length == 0) return null;
+        if (service.Settings.IsMacro(id)) return "Macros";
+        if (Assignments.KeyCombo(id) is { } combo)
+        {
+            if (Assignments.Commands.Any(c => c.Combo == combo)) return "Commands";
+            if (BuiltinActions.All.Any(a => a.Id == id)) return "System";
+            return combo.Contains('+') ? "Commands" : "Keys";
+        }
+        return "System";
+    }
+
+    private bool Matches(params string[] fields) =>
+        search.Trim().Length == 0 || fields.Any(f => f.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private void RenderOptions(StackPanel options, int bit, string current, Dictionary<int, string> bindings)
     {
         options.Children.Clear();
-        if (tab == "Macros")
+        // Which controls on this layer already use each assignment, like G HUB's right-hand column.
+        Dictionary<string, string> usage = bindings
+            .Select(x => (x.Value, Control: service.Settings.ControlFor(x.Key)))
+            .Where(x => x.Control is not null)
+            .GroupBy(x => x.Value)
+            .ToDictionary(g => g.Key, g => string.Join(", ", g.Select(x => ShortLabel(x.Control!))));
+        string Used(string id) => usage.GetValueOrDefault(id) ?? "";
+        int before = 0;
+
+        switch (tab)
         {
-            StackPanel list = new();
-            if (service.Settings.Macros.Count > 5)
-            {
-                TextBox filter = new() { Text = search, Margin = new Thickness(0, 0, 8, 8) };
-                filter.TextChanged += (_, _) => { search = filter.Text; RenderMacroRows(list, bit, current); };
-                options.Children.Add(Ui.Placeholder(filter, "Search macros"));
-            }
-            options.Children.Add(list);
-            RenderMacroRows(list, bit, current);
-            options.Children.Add(Ui.Button("New macro", () => CreateMacroFor(bit), "GhostBtn", "").With(new Thickness(0, 6, 0, 0)));
-            ((Button)options.Children[^1]).HorizontalAlignment = HorizontalAlignment.Left;
+            case "Commands":
+                options.Children.Add(ShortcutRecorder(bit));
+                before = options.Children.Count;
+                string? custom = Assignments.KeyCombo(current);
+                if (custom is not null && custom.Contains('+') && !Assignments.Commands.Any(c => c.Combo == custom)
+                    && !BuiltinActions.All.Any(a => a.Id == current) && Matches(custom, Assignments.DisplayCombo(custom), "Custom"))
+                {
+                    options.Children.Add(Section("Custom"));
+                    options.Children.Add(ListRow(current, true, Assignments.DisplayCombo(custom), "Custom shortcut", Used(current), bit, comboColumn: true));
+                }
+                foreach (IGrouping<string, (string Category, string Combo, string Name)> group in Assignments.Commands.GroupBy(c => c.Category))
+                {
+                    List<(string Category, string Combo, string Name)> items = group
+                        .Where(c => Matches(c.Name, c.Combo, Assignments.DisplayCombo(c.Combo), c.Category)).ToList();
+                    if (items.Count == 0) continue;
+                    options.Children.Add(Section(group.Key));
+                    foreach ((_, string combo, string name) in items)
+                    {
+                        string id = Assignments.KeyId(combo);
+                        options.Children.Add(ListRow(id, current == id, Assignments.DisplayCombo(combo), name, Used(id), bit, comboColumn: true));
+                    }
+                }
+                break;
+
+            case "Keys":
+                options.Children.Add(Ui.Text("The key stays down for as long as you hold the button.", "Body", size: 12, wrap: true).With(new Thickness(2, 0, 8, 8)));
+                before = options.Children.Count;
+                foreach ((string keyName, string name) in Assignments.Keys)
+                {
+                    if (!Matches(name, keyName)) continue;
+                    string id = Assignments.KeyId(keyName);
+                    options.Children.Add(ListRow(id, current == id, name, null, Used(id), bit));
+                }
+                break;
+
+            case "Macros":
+                StackPanel list = new();
+                options.Children.Add(list);
+                foreach (MacroDefinition macro in service.Settings.Macros.Where(m => Matches(m.Name)))
+                    list.Children.Add(OptionRow(macro.Id, current == macro.Id, macro.Name, ModeName(macro.Mode) + $" · {macro.Steps.Count} step{(macro.Steps.Count == 1 ? "" : "s")}", bit, macro));
+                if (service.Settings.Macros.Count == 0)
+                    list.Children.Add(Ui.Text("No macros yet. Create one and it will be assigned to this button.", "Body", size: 12).With(new Thickness(2, 4, 8, 4)));
+                else if (list.Children.Count == 0)
+                    list.Children.Add(NoMatches());
+                Button create = Ui.Button("New macro", () => CreateMacroFor(bit), "GhostBtn", "");
+                create.HorizontalAlignment = HorizontalAlignment.Left;
+                options.Children.Add(create.With(new Thickness(0, 6, 0, 0)));
+                return;
+
+            default:
+                if (Matches("Launch Application", "application", "program"))
+                {
+                    options.Children.Add(Section("Launch Application"));
+                    IEnumerable<string> launches = service.ActiveProfile.Assignments.Values
+                        .Concat(service.ActiveProfile.ShiftAssignments.Values)
+                        .Append(current)
+                        .Where(x => Assignments.LaunchPath(x) is not null)
+                        .Distinct();
+                    foreach (string id in launches)
+                        options.Children.Add(ListRow(id, current == id, Path.GetFileNameWithoutExtension(Assignments.LaunchPath(id)!), null, Used(id), bit, tooltip: Assignments.LaunchPath(id)));
+                    Button add = Ui.Button("ADD APPLICATION", () => PickApplication(bit), "GhostBtn", "");
+                    add.HorizontalAlignment = HorizontalAlignment.Left;
+                    options.Children.Add(add.With(new Thickness(0, 0, 0, 4)));
+                }
+                before = options.Children.Count;
+                foreach (IGrouping<string, (string Id, string Name, string Description, string Category)> group in BuiltinActions.All.GroupBy(a => a.Category))
+                {
+                    List<(string Id, string Name, string Description, string Category)> items = group
+                        .Where(a => !(a.Id == BuiltinActions.GShift && diagram.ShiftLayer))
+                        .Where(a => !(a.Id == BuiltinActions.DpiShift && selected.IsWheel))
+                        .Where(a => Matches(a.Name, a.Category, a.Description)).ToList();
+                    if (items.Count == 0) continue;
+                    options.Children.Add(Section(group.Key));
+                    foreach ((string id, string name, string description, _) in items)
+                        options.Children.Add(ListRow(id, current == id, name, null, Used(id), bit, tooltip: description.Length > 0 ? description : null));
+                }
+                break;
         }
-        else
-        {
-            foreach ((string id, string name, string description) in BuiltinActions.All)
-            {
-                if (id == BuiltinActions.GShift && diagram.ShiftLayer) continue;
-                if (id == BuiltinActions.DpiShift && selected.IsWheel) continue;
-                options.Children.Add(OptionRow(id, current == id, name, description, bit));
-            }
-        }
+        if (options.Children.Count == before) options.Children.Add(NoMatches());
     }
 
-    private void RenderMacroRows(StackPanel list, int bit, string current)
+    private static TextBlock NoMatches() => Ui.Text("Nothing matches your search.", "Body", size: 12).With(new Thickness(2, 6, 8, 4));
+
+    private static TextBlock Section(string title) =>
+        Ui.Text(title, size: 14, bold: true).With(new Thickness(2, 14, 8, 6));
+
+    private static string ShortLabel(MouseControl control) =>
+        control.Id.StartsWith('G') ? control.Id : control.Label;
+
+    /// <summary>A one-line option: name (or shortcut and name for commands) plus the controls already using it.</summary>
+    private RadioButton ListRow(string id, bool isCurrent, string primary, string? secondary, string used, int bit, bool comboColumn = false, string? tooltip = null)
     {
-        list.Children.Clear();
-        IEnumerable<MacroDefinition> macros = service.Settings.Macros
-            .Where(m => search.Length == 0 || m.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
-        foreach (MacroDefinition macro in macros)
-            list.Children.Add(OptionRow(macro.Id, current == macro.Id, macro.Name, ModeName(macro.Mode) + $" · {macro.Steps.Count} step{(macro.Steps.Count == 1 ? "" : "s")}", bit, macro));
-        if (service.Settings.Macros.Count == 0)
-            list.Children.Add(Ui.Text("No macros yet. Create one and it will be assigned to this button.", "Body", size: 12).With(new Thickness(2, 4, 8, 4)));
+        Grid content = new();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = comboColumn ? new GridLength(118) : new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = comboColumn ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock first = Ui.Text(primary, size: 12.5, bold: comboColumn, wrap: true);
+        first.VerticalAlignment = VerticalAlignment.Center;
+        content.Children.Add(first);
+        if (secondary is not null)
+        {
+            TextBlock second = Ui.Text(secondary, size: 12.5, color: "Muted", wrap: true).With(new Thickness(10, 0, 0, 0));
+            second.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(second, 1);
+            content.Children.Add(second);
+        }
+        if (used.Length > 0)
+        {
+            TextBlock badge = Ui.Text(used, size: 11.5, color: "Accent", bold: true).With(new Thickness(10, 0, 0, 0));
+            badge.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(badge, 2);
+            content.Children.Add(badge);
+        }
+        RadioButton row = new()
+        {
+            Style = Ui.Style("Row"), Content = content, IsChecked = isCurrent, GroupName = "Assignment",
+            Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(0, 0, 8, 1), ToolTip = tooltip
+        };
+        row.Click += (_, _) =>
+        {
+            service.Assign(diagram.ShiftLayer, bit, id);
+            Refresh();
+        };
+        MakeDraggable(row, id);
+        return row;
     }
 
-    private RadioButton OptionRow(string? id, bool isCurrent, string name, string subtitle, int bit, MacroDefinition? macro = null)
+    private RadioButton OptionRow(string id, bool isCurrent, string name, string subtitle, int bit, MacroDefinition? macro = null)
     {
         Grid content = new();
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         FrameworkElement icon = macro is not null ? Ui.MacroMark()
-            : id is null ? Ui.Glyph("\uE7A7", 14, "Muted") : Ui.Glyph("", 13, "Accent");
+            : Ui.Glyph("", 13, "Accent");
         icon.Margin = new Thickness(0, 0, 12, 0);
         icon.VerticalAlignment = VerticalAlignment.Center;
         icon.Width = 18;
@@ -293,8 +466,79 @@ internal sealed class AssignmentsPage : UserControl, IPage
             service.Assign(diagram.ShiftLayer, bit, id);
             Refresh();
         };
+        MakeDraggable(row, id);
         return row;
     }
+
+    private void PickApplication(int bit)
+    {
+        Microsoft.Win32.OpenFileDialog dialog = new() { Filter = "Applications (*.exe)|*.exe|All files (*.*)|*.*", Title = "Choose an application" };
+        if (dialog.ShowDialog(Window.GetWindow(this)) != true) return;
+        service.Assign(diagram.ShiftLayer, bit, Assignments.LaunchId(dialog.FileName));
+        Refresh();
+    }
+
+    /// <summary>
+    /// "Record a shortcut": the next key combination pressed (including Win and Alt shortcuts, which the
+    /// keyboard hook swallows) becomes this button's assignment. Esc on its own cancels.
+    /// </summary>
+    private Button ShortcutRecorder(int bit)
+    {
+        Button button = Ui.Button("Record a shortcut", () => { }, "Btn", "", "Press any key combination to assign it");
+        button.HorizontalAlignment = HorizontalAlignment.Left;
+        button.Margin = new Thickness(0, 0, 0, 4);
+        object idle = button.Content;
+        KeyboardHook? hook = null;
+        HashSet<ushort> swallowed = [];
+
+        void Stop()
+        {
+            hook?.Dispose();
+            hook = null;
+            button.Content = idle;
+        }
+
+        button.Click += (_, _) =>
+        {
+            if (hook is not null) { Stop(); return; }
+            try { hook = new KeyboardHook(OnKey); }
+            catch (System.ComponentModel.Win32Exception) { shell.ShowToast("Shortcut recording isn't available"); return; }
+            button.Content = Ui.Row(8, Ui.Glyph("", 12.5, "Warning"), Ui.Text("Press a shortcut… (Esc cancels)", color: "Warning"));
+        };
+        button.Unloaded += (_, _) => Stop();
+
+        bool OnKey(ushort vk, bool down)
+        {
+            // Key releases for keys swallowed while recording are swallowed too, so nothing sees a stray release.
+            if (!down) return swallowed.Remove(vk);
+            if (hook is null || Window.GetWindow(button) is not { IsActive: true })
+            {
+                Dispatcher.BeginInvoke(Stop);
+                return false;
+            }
+            swallowed.Add(vk);
+            if (VirtualKeys.IsModifier(vk)) return true;
+            List<string> parts = [];
+            if (IsDown(0x11)) parts.Add("Ctrl");
+            if (IsDown(0x10)) parts.Add("Shift");
+            if (IsDown(0x12)) parts.Add("Alt");
+            if (IsDown(0x5B) || IsDown(0x5C)) parts.Add("Win");
+            parts.Add(VirtualKeys.NameOf(vk));
+            bool cancel = vk == 0x1B && parts.Count == 1;
+            Dispatcher.BeginInvoke(() =>
+            {
+                Stop();
+                if (cancel) return;
+                service.Assign(diagram.ShiftLayer, bit, Assignments.KeyId(string.Join("+", parts)));
+                Refresh();
+            });
+            return true;
+        }
+        return button;
+    }
+
+    private static bool IsDown(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vk);
 
     private void CreateMacroFor(int bit)
     {

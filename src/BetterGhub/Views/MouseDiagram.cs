@@ -27,6 +27,13 @@ internal sealed class MouseDiagram : Viewbox
     /// <summary>Callouts show each control's signal instead of its action.</summary>
     public bool CalibrationMode { get; set; }
     public event Action<MouseControl>? ControlClicked;
+    /// <summary>An assignment id was dragged from the picker and dropped on a control.</summary>
+    public event Action<MouseControl, string>? AssignmentDropped;
+    /// <summary>"Reset to default" was chosen from a control's right-click menu.</summary>
+    public event Action<MouseControl>? ResetRequested;
+
+    /// <summary>Drag-and-drop data format carrying an assignment id.</summary>
+    public const string DragFormat = "BetterGhub.Assignment";
 
     public MouseDiagram(MouseService service)
     {
@@ -136,7 +143,7 @@ internal sealed class MouseDiagram : Viewbox
             int? bit = settings.BitFor(control);
             MouseProfile profile = owner.service.ActiveProfile;
             string? assigned = bit is int b ? (owner.ShiftLayer ? profile.ShiftAssignments : profile.Assignments).GetValueOrDefault(b) : null;
-            bool isMacro = assigned is not null && !BuiltinActions.IsBuiltin(assigned);
+            bool isMacro = settings.IsMacro(assigned);
             bool calibrated = bit is not null;
             bool left = control.Side == CalloutSide.Left;
 
@@ -181,8 +188,45 @@ internal sealed class MouseDiagram : Viewbox
             {
                 hotspot.StrokeDashArray = [2, 2];
             }
+            if (!owner.CalibrationMode && calibrated)
+            {
+                foreach (FrameworkElement target in new FrameworkElement[] { label, hotspot })
+                {
+                    target.AllowDrop = true;
+                    target.DragEnter += OnDragOver;
+                    target.DragOver += OnDragOver;
+                    target.DragLeave += (_, _) => Highlight(false);
+                    target.Drop += (_, e) =>
+                    {
+                        Highlight(false);
+                        if (e.Data.GetData(DragFormat) is string id) owner.AssignmentDropped?.Invoke(control, id);
+                        e.Handled = true;
+                    };
+                    target.ContextMenu = ResetMenu(assigned is not null);
+                }
+            }
             halo.Fill = new SolidColorBrush(Color.FromArgb(70, 0x2E, 0xC5, 0xEA));
             Highlight(false);
+        }
+
+        private void OnDragOver(object sender, DragEventArgs e)
+        {
+            bool accepts = e.Data.GetDataPresent(DragFormat);
+            e.Effects = accepts ? DragDropEffects.Copy : DragDropEffects.None;
+            if (accepts) Highlight(true);
+            e.Handled = true;
+        }
+
+        private ContextMenu ResetMenu(bool assigned)
+        {
+            MenuItem reset = new()
+            {
+                Header = owner.ShiftLayer ? "Clear G-Shift action" : "Reset to default",
+                Icon = Ui.Glyph("", 12),
+                IsEnabled = assigned
+            };
+            reset.Click += (_, _) => owner.ResetRequested?.Invoke(control);
+            return new ContextMenu { Items = { reset } };
         }
 
         public void AddTo(Canvas canvas)

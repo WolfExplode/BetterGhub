@@ -155,7 +155,10 @@ public sealed class Settings
         MouseControls.All.FirstOrDefault(c => BitFor(c) == bit);
 
     public string DescribeAssignment(string? id) =>
-        string.IsNullOrEmpty(id) ? "" : Macros.FirstOrDefault(m => m.Id == id)?.Name ?? BuiltinActions.NameFor(id) ?? "Missing macro";
+        string.IsNullOrEmpty(id) ? ""
+            : Macros.FirstOrDefault(m => m.Id == id)?.Name ?? BuiltinActions.NameFor(id) ?? Assignments.NameFor(id) ?? "Missing macro";
+
+    public bool IsMacro(string? id) => id is not null && Macros.Any(m => m.Id == id);
 }
 
 public static class BuiltinActions
@@ -166,17 +169,53 @@ public static class BuiltinActions
     public const string DpiCycle = "__dpi_cycle__";
     public const string GShift = "__g_shift__";
     public const string Disabled = "__disabled__";
+    public const string LeftClick = "__left_click__";
+    public const string RightClick = "__right_click__";
+    public const string MiddleClick = "__middle_click__";
+    public const string Back = "__back__";
+    public const string Forward = "__forward__";
+    public const string DoubleClick = "__double_click__";
+    public const string ScrollUp = "__scroll_up__";
+    public const string ScrollDown = "__scroll_down__";
+    public const string ScrollLeft = "__scroll_left__";
+    public const string ScrollRight = "__scroll_right__";
+    public const string LockScreen = "__lock_screen__";
 
-    public static readonly (string Id, string Name, string Description)[] All =
+    /// <summary>The System tab, in display order. Media and OS entries are plain key assignments with friendly names.</summary>
+    public static readonly (string Id, string Name, string Description, string Category)[] All =
     [
-        (DpiShift, "DPI Shift", "Hold for the DPI Shift speed"),
-        (DpiUp, "DPI Up", "Next higher DPI speed"),
-        (DpiDown, "DPI Down", "Next lower DPI speed"),
-        (DpiCycle, "DPI Cycle", "Step through DPI speeds"),
-        (GShift, "G-Shift", "Hold to use the G-Shift layer"),
-        (Disabled, "Do nothing", "Run no macro (pair with blocking to disable a button)")
+        (LeftClick, "Primary Click", "Left mouse button", "Mouse"),
+        (RightClick, "Secondary Click", "Right mouse button", "Mouse"),
+        (MiddleClick, "Middle Click", "Middle mouse button", "Mouse"),
+        (Back, "Back", "Mouse back button", "Mouse"),
+        (Forward, "Forward", "Mouse forward button", "Mouse"),
+        (DoubleClick, "Double Click", "Two left clicks", "Mouse"),
+        (ScrollUp, "Scroll Up", "One wheel notch up", "Mouse"),
+        (ScrollDown, "Scroll Down", "One wheel notch down", "Mouse"),
+        (ScrollLeft, "Scroll Left", "One notch left", "Mouse"),
+        (ScrollRight, "Scroll Right", "One notch right", "Mouse"),
+        (DpiUp, "DPI Up", "Next higher DPI speed", "Mouse"),
+        (DpiDown, "DPI Down", "Next lower DPI speed", "Mouse"),
+        (DpiCycle, "DPI Cycle", "Step through DPI speeds", "Mouse"),
+        (DpiShift, "DPI Shift", "Hold for the DPI Shift speed", "Mouse"),
+        (GShift, "G-Shift", "Hold to use the G-Shift layer", "Device"),
+        (Disabled, "Do nothing", "Run nothing (pair with blocking to disable a button)", "Device"),
+        (Assignments.KeyId("VolumeUp"), "Volume Up", "", "Media"),
+        (Assignments.KeyId("VolumeDown"), "Volume Down", "", "Media"),
+        (Assignments.KeyId("NextTrack"), "Next Track", "", "Media"),
+        (Assignments.KeyId("PreviousTrack"), "Previous Track", "", "Media"),
+        (Assignments.KeyId("PlayPause"), "Play/Pause", "", "Media"),
+        (Assignments.KeyId("StopMedia"), "Stop", "", "Media"),
+        (Assignments.KeyId("Mute"), "Volume Mute", "", "Media"),
+        (LockScreen, "Lock screen", "Lock the PC", "OS"),
+        (Assignments.KeyId("Ctrl+Z"), "Undo", "Ctrl + Z", "OS"),
+        (Assignments.KeyId("Ctrl+X"), "Cut", "Ctrl + X", "OS"),
+        (Assignments.KeyId("Ctrl+C"), "Copy", "Ctrl + C", "OS"),
+        (Assignments.KeyId("Ctrl+V"), "Paste", "Ctrl + V", "OS"),
+        (Assignments.KeyId("Win+Shift+S"), "Screenshot", "Win + Shift + S", "OS"),
     ];
 
     public static string? NameFor(string? id) => All.FirstOrDefault(x => x.Id == id).Name;
-    public static bool IsBuiltin(string? id) => All.Any(x => x.Id == id);
+    /// <summary>Actions BetterGhub carries out itself, as opposed to macros, keys and launches.</summary>
+    public static bool IsBuiltin(string? id) => id is not null && id.StartsWith("__", StringComparison.Ordinal) && All.Any(x => x.Id == id);
 }
