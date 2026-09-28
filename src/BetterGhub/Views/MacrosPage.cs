@@ -63,7 +63,10 @@ internal sealed class MacrosPage : UserControl, IPage
 
     public void Refresh()
     {
-        if (macro is not null && !service.Settings.Macros.Contains(macro)) macro = service.Settings.Macros.FirstOrDefault();
+        // By id, since undo puts back copies of the macros.
+        if (macro is not null && !service.Settings.Macros.Contains(macro))
+            macro = service.Settings.Macros.FirstOrDefault(m => m.Id == macro.Id) ?? service.Settings.Macros.FirstOrDefault();
+        if (macro is null || selectedStep >= macro.Steps.Count) selectedStep = -1;
         RenderList();
         RenderEditor();
     }

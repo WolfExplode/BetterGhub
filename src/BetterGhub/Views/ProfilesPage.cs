@@ -48,7 +48,8 @@ internal sealed class ProfilesPage : UserControl, IPage
     public void Refresh()
     {
         autoSwitch.IsChecked = service.Settings.AutoSwitchProfiles;
-        if (selected is null || !service.Settings.Profiles.Contains(selected)) selected = service.ActiveProfile;
+        if (selected is null || !service.Settings.Profiles.Contains(selected))
+            selected = service.Settings.Profiles.FirstOrDefault(p => p.Id == selected?.Id) ?? service.ActiveProfile; // Undo puts back copies.
         tiles.Children.Clear();
         foreach (MouseProfile profile in service.Settings.Profiles) tiles.Children.Add(Tile(profile));
         tiles.Children.Add(AddTile());

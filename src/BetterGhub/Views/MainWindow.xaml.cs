@@ -35,6 +35,7 @@ public partial class MainWindow : Window
         service.SettingsChanged += () => (PageHost.Content as IPage)?.Refresh();
         service.Calibrated += (control, bit) => ShowToast($"{control.Label} calibrated · 0x{bit:x4}");
         service.Notice += ShowToast;
+        service.EditSource = () => System.Windows.Input.Keyboard.FocusedElement as TextBoxBase;
         StateChanged += (_, _) => UpdateMaximized();
         SizeChanged += (_, _) => UpdateCompact();
         SourceInitialized += (_, _) => AttachInput();
@@ -238,7 +239,37 @@ public partial class MainWindow : Window
     protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == System.Windows.Input.Key.Escape && ProfilePopup.IsOpen) { CloseProfileMenu(); e.Handled = true; }
+        else if (UndoKey(e) is bool redo && TryUndo(redo)) e.Handled = true;
         base.OnPreviewKeyDown(e);
+    }
+
+    /// <summary>Ctrl+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo. Null for any other key.</summary>
+    private static bool? UndoKey(System.Windows.Input.KeyEventArgs e)
+    {
+        System.Windows.Input.ModifierKeys modifiers = System.Windows.Input.Keyboard.Modifiers;
+        return (e.Key, modifiers) switch
+        {
+            (System.Windows.Input.Key.Z, System.Windows.Input.ModifierKeys.Control) => false,
+            (System.Windows.Input.Key.Y, System.Windows.Input.ModifierKeys.Control) => true,
+            (System.Windows.Input.Key.Z, System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift) => true,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Undoes or redoes the last edit. A text box being typed in undoes its own typing first, and a read-only
+    /// one is a shortcut capture box, which records the keys instead.
+    /// </summary>
+    private bool TryUndo(bool redo)
+    {
+        if (System.Windows.Input.Keyboard.FocusedElement is TextBoxBase box)
+        {
+            if (box.IsReadOnly) return false;
+            if (redo ? box.CanRedo : box.CanUndo) return false;
+        }
+        if (redo ? service.Redo() : service.Undo()) ShowToast(redo ? "Redone" : "Undone");
+        else ShowToast(redo ? "Nothing to redo" : "Nothing to undo");
+        return true;
     }
 
     protected override void OnDeactivated(EventArgs e)

@@ -34,8 +34,13 @@ internal sealed class MouseService : IDisposable
     private Timer? onboardTimer;
     /// <summary>The profile the pages last rendered, to notice when <see cref="ActiveProfile"/> becomes another one.</summary>
     private MouseProfile? shownProfile;
+    private readonly EditHistory history;
 
     public Settings Settings { get; }
+    /// <summary>What an edit is coming from (the focused text box), so a burst of typing undoes as one step.</summary>
+    public Func<object?>? EditSource { get; set; }
+    public bool CanUndo => history.CanUndo;
+    public bool CanRedo => history.CanRedo;
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
     public string StateDetail { get; private set; } = "";
     public int DeviceDpi { get; private set; }
@@ -90,6 +95,7 @@ internal sealed class MouseService : IDisposable
         this.ui = ui;
         Settings = Settings.Load();
         if (Settings.LoadError is { } loadError) Write(loadError);
+        history = new EditHistory(CaptureEdits());
         bridge.Event += item => Post(() => HandleEvent(item));
         bridge.Exited += () => Post(() =>
         {
@@ -108,8 +114,11 @@ internal sealed class MouseService : IDisposable
         Logged?.Invoke(entry);
     }
 
-    /// <summary>Saves settings; in on-board mode also writes any change to the running slot, shortly after edits stop.</summary>
-    public void Save()
+    /// <summary>
+    /// Saves settings; in on-board mode also writes any change to the running slot, shortly after edits stop.
+    /// The change becomes an undo step unless <paramref name="undoable"/> is false (it isn't the user's edit).
+    /// </summary>
+    public void Save(bool undoable = true)
     {
         try { Settings.Save(); }
         catch (Exception error) { Write("Could not save settings: " + error.Message); }
@@ -118,6 +127,57 @@ internal sealed class MouseService : IDisposable
             SnapToOnboardSpeeds(ActiveProfile);
             ScheduleOnboardWrite();
         }
+        if (undoable) history.Record(CaptureEdits(), EditSource?.Invoke());
+        else RebaseHistory();
+    }
+
+    // ── Undo ──────────────────────────────────────────────────────────────────
+
+    /// <summary>Everything an edit can change, and the on-board slot's profile when that's what the pages edit.</summary>
+    private sealed record EditState(List<MouseProfile> Profiles, List<MacroDefinition> Macros, Dictionary<string, int> ControlBits,
+        bool AutoConnect, bool AutoSwitchProfiles, bool CloseToTray, int? OnboardSector, MouseProfile? Onboard);
+
+    private static readonly JsonSerializerOptions EditJson = new() { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+
+    private string CaptureEdits() => JsonSerializer.Serialize(new EditState(Settings.Profiles, Settings.Macros, Settings.ControlBits,
+        Settings.AutoConnect, Settings.AutoSwitchProfiles, Settings.CloseToTray, IsOnboard ? OnboardSector : null, IsOnboard ? onboardProfile : null), EditJson);
+
+    /// <summary>Takes the current state as the undo baseline without an undo step (for changes that aren't the user's edits).</summary>
+    private void RebaseHistory() => history.Rebase(CaptureEdits());
+
+    /// <summary>Reverts the last edit; false when there's nothing to undo.</summary>
+    public bool Undo() => RestoreEdits(history.Undo());
+
+    /// <summary>Reapplies the last undone edit; false when there's nothing to redo.</summary>
+    public bool Redo() => RestoreEdits(history.Redo());
+
+    private bool RestoreEdits(string? json)
+    {
+        if (json is null || JsonSerializer.Deserialize<EditState>(json, EditJson) is not { } state) return false;
+        Learning = null;
+        ReleaseAll();
+        engine.ResetSequences();
+        Settings.Profiles = state.Profiles;
+        Settings.Macros = state.Macros;
+        Settings.ControlBits = state.ControlBits;
+        Settings.AutoConnect = state.AutoConnect;
+        Settings.AutoSwitchProfiles = state.AutoSwitchProfiles;
+        Settings.CloseToTray = state.CloseToTray;
+        try { Settings.Save(); }
+        catch (Exception error) { Write("Could not save settings: " + error.Message); }
+        if (IsOnboard)
+        {
+            // An edit to another slot (or made in host mode) can't be put back on this one.
+            if (state.Onboard is { } slot && state.OnboardSector == OnboardSector) onboardProfile = slot;
+            SnapToOnboardSpeeds(ActiveProfile);
+            ScheduleOnboardWrite();
+            SendDpi(ActiveProfile.Dpi);
+        }
+        else ApplyDeviceSettings();
+        shownProfile = ActiveProfile;
+        StateChanged?.Invoke();
+        SettingsChanged?.Invoke();
+        return true;
     }
 
     /// <summary>
@@ -229,6 +289,7 @@ internal sealed class MouseService : IDisposable
     {
         if (ReferenceEquals(ActiveProfile, shownProfile)) return;
         shownProfile = ActiveProfile;
+        RebaseHistory(); // A fresh read or another mode isn't an edit to undo.
         SettingsChanged?.Invoke();
     }
 
@@ -610,7 +671,7 @@ internal sealed class MouseService : IDisposable
             _ => (current + 1) % stages.Count
         };
         profile.Dpi = stages[next];
-        Save();
+        Save(undoable: false); // Pressed on the mouse, not an edit.
         SendDpi(profile.Dpi);
         Write($"DPI {profile.Dpi}");
         SettingsChanged?.Invoke();
