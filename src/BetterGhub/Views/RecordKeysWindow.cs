@@ -7,7 +7,7 @@ using BetterGhub.Input;
 
 namespace BetterGhub.Views;
 
-/// <summary>Records key down/up edges with their timing while this window has focus.</summary>
+/// <summary>Records key down/up edges with their timing while this window has focus, swallowing them so they don't act on Windows.</summary>
 internal sealed class RecordKeysWindow : Window
 {
     private readonly Stopwatch stopwatch = new();
@@ -15,6 +15,7 @@ internal sealed class RecordKeysWindow : Window
     private readonly WrapPanel preview = new();
     private readonly TextBlock timer = Ui.Text("0.0 s", size: 12, color: "Muted");
     private readonly CheckBox keepDelays = new() { IsChecked = true, Focusable = false };
+    private KeyboardHook? hook;
     private long previous;
     public List<MacroStep> Recorded { get; } = [];
 
@@ -69,18 +70,25 @@ internal sealed class RecordKeysWindow : Window
         Content = root;
 
         MouseLeftButtonDown += (_, _) => { try { DragMove(); } catch (InvalidOperationException) { } };
-        PreviewKeyDown += (_, e) => { Capture(e, down: true); e.Handled = true; };
-        PreviewKeyUp += (_, e) => { Capture(e, down: false); e.Handled = true; };
+        // Fallback for when the hook can't be installed; the hook swallows keys before they get here.
+        PreviewKeyDown += (_, e) => { if (!e.IsRepeat) Capture(KeyCapture.VirtualKey(e), down: true); e.Handled = true; };
+        PreviewKeyUp += (_, e) => { Capture(KeyCapture.VirtualKey(e), down: false); e.Handled = true; };
         System.Windows.Threading.DispatcherTimer tick = new() { Interval = TimeSpan.FromMilliseconds(100) };
         tick.Tick += (_, _) => timer.Text = $"{stopwatch.Elapsed.TotalSeconds:0.0} s";
-        ContentRendered += (_, _) => { stopwatch.Start(); tick.Start(); Focus(); };
-        Closed += (_, _) => tick.Stop();
+        ContentRendered += (_, _) =>
+        {
+            stopwatch.Start();
+            tick.Start();
+            Focus();
+            // Swallow keys while recording so shortcuts like Alt+Tab or Win are recorded instead of acted on.
+            try { hook = new KeyboardHook((key, down) => { if (!IsActive) return false; Capture(key, down); return true; }); }
+            catch (System.ComponentModel.Win32Exception) { }
+        };
+        Closed += (_, _) => { tick.Stop(); hook?.Dispose(); };
     }
 
-    private void Capture(KeyEventArgs e, bool down)
+    private void Capture(ushort key, bool down)
     {
-        if (e.IsRepeat) return;
-        ushort key = KeyCapture.VirtualKey(e);
         if (key == 0) return;
         if (down ? !held.Add(key) : !held.Remove(key)) return;
         long now = stopwatch.ElapsedMilliseconds;
