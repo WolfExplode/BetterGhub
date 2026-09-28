@@ -1,0 +1,8 @@
+.venv/
+**/bin/
+**/obj/
+capture*.log
+__pycache__/
+*.tmp
+settings.json
+debug.log

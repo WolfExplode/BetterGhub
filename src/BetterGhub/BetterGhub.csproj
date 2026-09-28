@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>BetterGhub</RootNamespace>
+    <AssemblyName>BetterGhub</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="..\..\images\g502-x-lightspeed-mouse-top-angle-transparent.png" Link="Assets\mouse-top.png" />
+    <Resource Include="..\..\images\g502-x-lightspeed-mouse-profile-angle.png" Link="Assets\mouse-side.png" />
+  </ItemGroup>
+</Project>
