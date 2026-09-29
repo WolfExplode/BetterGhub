@@ -361,6 +361,37 @@ internal sealed class MacrosPage : UserControl, IPage
         };
         delayBox.PreviewMouseLeftButtonDown += (_, e) => e.Handled = !delayBox.IsEnabled;
         options.Children.Add(standard);
+        if (current.StandardDelayMs is int standardMs)
+        {
+            bool randomStandard = current.StandardDelayMaxMs.HasValue;
+            CheckBox randomize = new() { Style = Ui.Style("Switch"), IsChecked = randomStandard, Margin = new Thickness(0, 12, 0, 0) };
+            TextBox maxBox = new() { Text = (current.StandardDelayMaxMs ?? Math.Max(standardMs * 2, standardMs + 50)).ToString(), Width = 64, Padding = new Thickness(16, 8, 16, 8), IsEnabled = randomStandard };
+            StackPanel randomRow = Ui.Row(8, Ui.Text("Randomize up to", bold: true), maxBox, Ui.Text("ms", color: "Muted"));
+            foreach (FrameworkElement child in randomRow.Children) child.VerticalAlignment = VerticalAlignment.Center;
+            randomize.Content = new StackPanel
+            {
+                Children =
+                {
+                    randomRow,
+                    Ui.Text(randomStandard ? "Each gap is a random time between the standard delay and this." : "Every gap uses exactly the standard delay.", "Body", size: 12).With(new Thickness(0, 4, 0, 0))
+                }
+            };
+            randomize.Click += (_, _) =>
+            {
+                current.StandardDelayMaxMs = randomize.IsChecked == true ? Math.Max(ParseDelay(maxBox.Text, standardMs), current.StandardDelayMs ?? 0) : null;
+                service.Save();
+                RenderEditor();
+            };
+            maxBox.LostFocus += (_, _) =>
+            {
+                if (current.StandardDelayMaxMs is null) return;
+                current.StandardDelayMaxMs = Math.Max(ParseDelay(maxBox.Text, current.StandardDelayMaxMs.Value), current.StandardDelayMs ?? 0);
+                maxBox.Text = current.StandardDelayMaxMs.ToString();
+                service.Save();
+            };
+            maxBox.PreviewMouseLeftButtonDown += (_, e) => e.Handled = !maxBox.IsEnabled;
+            options.Children.Add(randomize);
+        }
         settingsRow.Children.Add(options);
         editor.Children.Add(settingsRow);
 
@@ -390,7 +421,7 @@ internal sealed class MacrosPage : UserControl, IPage
         RenderTimeline();
     }
 
-    private static int ParseDelay(string text, int fallback) => int.TryParse(text, out int value) ? Math.Clamp(value, 0, 60000) : fallback;
+    private static int ParseDelay(string text, int fallback) => int.TryParse(text, out int value) ? Math.Clamp(value, 0, Delays.Max) : fallback;
 
     private void FocusTitle() => Dispatcher.BeginInvoke(() =>
     {
@@ -618,17 +649,44 @@ internal sealed class MacrosPage : UserControl, IPage
                 body.Children.Add(launch);
                 break;
             case StepChips.Family.Delay:
+                bool random = step.DelayMaxMs.HasValue;
                 TextBox ms = new() { Text = step.DelayMs.ToString(), Width = 100 };
-                ms.TextChanged += (_, _) => { if (int.TryParse(ms.Text, out int value)) { step.DelayMs = Math.Clamp(value, 0, 60000); service.Save(); UpdateSelectedChip(); } };
-                StackPanel presets = Ui.Row(6, ms, Ui.Text("milliseconds", color: "Muted"));
-                ((FrameworkElement)presets.Children[1]).VerticalAlignment = VerticalAlignment.Center;
-                foreach (int preset in new[] { 10, 50, 100, 250, 1000 })
+                ms.TextChanged += (_, _) => { if (int.TryParse(ms.Text, out int value)) { step.DelayMs = Math.Clamp(value, 0, Delays.Max); service.Save(); UpdateSelectedChip(); } };
+                StackPanel presets = Ui.Row(6, ms);
+                if (random)
                 {
-                    Button quick = Ui.Button(StepChips.FormatDelay(preset) is var (v, u) ? $"{v} {u}" : "", () => { ms.Text = preset.ToString(); }, "GhostBtn");
-                    quick.Padding = new Thickness(9, 5, 9, 5);
-                    presets.Children.Add(quick.With(new Thickness(preset == 10 ? 14 : 2, 0, 0, 0)));
+                    TextBox max = new() { Text = step.DelayMaxMs.ToString(), Width = 100 };
+                    max.TextChanged += (_, _) => { if (int.TryParse(max.Text, out int value)) { step.DelayMaxMs = Math.Clamp(value, 0, Delays.Max); service.Save(); UpdateSelectedChip(); } };
+                    max.LostFocus += (_, _) =>
+                    {
+                        if (step.DelayMaxMs < step.DelayMs) { step.DelayMaxMs = step.DelayMs; service.Save(); UpdateSelectedChip(); }
+                        max.Text = step.DelayMaxMs.ToString();
+                    };
+                    presets.Children.Add(Ui.Text("to", color: "Muted"));
+                    presets.Children.Add(max);
                 }
+                presets.Children.Add(Ui.Text("milliseconds", color: "Muted"));
+                foreach (FrameworkElement child in presets.Children) child.VerticalAlignment = VerticalAlignment.Center;
+                if (!random)
+                    foreach (int preset in new[] { 10, 50, 100, 250, 1000 })
+                    {
+                        Button quick = Ui.Button(StepChips.FormatDelay(preset) is var (v, u) ? $"{v} {u}" : "", () => { ms.Text = preset.ToString(); }, "GhostBtn");
+                        quick.Padding = new Thickness(9, 5, 9, 5);
+                        presets.Children.Add(quick.With(new Thickness(preset == 10 ? 14 : 2, 0, 0, 0)));
+                    }
                 body.Children.Add(presets);
+                CheckBox randomize = new()
+                {
+                    Style = Ui.Style("Switch"), IsChecked = random, Margin = new Thickness(0, 12, 0, 0),
+                    Content = Ui.Text(random ? "Random delay: waits a different time in this range every run" : "Random delay", bold: !random)
+                };
+                randomize.Click += (_, _) =>
+                {
+                    step.DelayMaxMs = randomize.IsChecked == true ? Math.Min(Delays.Max, Math.Max(step.DelayMs * 2, step.DelayMs + 50)) : null;
+                    service.Save();
+                    RenderTimeline();
+                };
+                body.Children.Add(randomize);
                 if (macro.StandardDelayMs.HasValue)
                     body.Children.Add(Ui.Text("Ignored while this macro uses a standard delay.", "Body", size: 12, color: "Warning").With(new Thickness(0, 8, 0, 0)));
                 break;

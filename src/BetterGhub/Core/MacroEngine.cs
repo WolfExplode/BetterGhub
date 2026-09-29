@@ -40,6 +40,7 @@ internal sealed class MacroEngine : IDisposable
         // Snapshot so edits in the UI cannot change a playback in progress.
         List<MacroStep> steps = macro.Steps.Select(s => s.Clone()).ToList();
         int? standardDelay = macro.StandardDelayMs;
+        int? standardDelayMax = macro.StandardDelayMaxMs;
         bool sequence = macro.Mode == MacroMode.Sequence && !ignoreSequence;
         _ = Task.Run(async () =>
         {
@@ -61,8 +62,8 @@ internal sealed class MacroEngine : IDisposable
                 {
                     do
                     {
-                        await RunAll(steps, standardDelay, heldKeys, heldButtons, cancellation.Token);
-                        await Task.Delay(repeat ? Math.Max(20, standardDelay ?? 0) : 0, cancellation.Token);
+                        await RunAll(steps, standardDelay, standardDelayMax, heldKeys, heldButtons, cancellation.Token);
+                        await Task.Delay(repeat ? Math.Max(20, standardDelay is int gap ? Delays.Roll(gap, standardDelayMax) : 0) : 0, cancellation.Token);
                     } while (repeat && !cancellation.IsCancellationRequested);
                 }
             }
@@ -89,7 +90,7 @@ internal sealed class MacroEngine : IDisposable
         });
     }
 
-    private static async Task RunAll(List<MacroStep> steps, int? standardDelay, HashSet<ushort> heldKeys, HashSet<int> heldButtons, CancellationToken cancellation)
+    private static async Task RunAll(List<MacroStep> steps, int? standardDelay, int? standardDelayMax, HashSet<ushort> heldKeys, HashSet<int> heldButtons, CancellationToken cancellation)
     {
         bool first = true;
         foreach (MacroStep step in steps)
@@ -97,7 +98,7 @@ internal sealed class MacroEngine : IDisposable
             if (standardDelay.HasValue)
             {
                 if (step.Kind == ActionKind.Delay) continue;
-                if (!first) await Task.Delay(Math.Clamp(standardDelay.Value, 0, 60000), cancellation);
+                if (!first) await Task.Delay(Delays.Roll(standardDelay.Value, standardDelayMax), cancellation);
             }
             await Execute(step, heldKeys, heldButtons, cancellation);
             first = false;
@@ -109,7 +110,7 @@ internal sealed class MacroEngine : IDisposable
         cancellation.ThrowIfCancellationRequested();
         switch (step.Kind)
         {
-            case ActionKind.Delay: await Task.Delay(Math.Clamp(step.DelayMs, 0, 60000), cancellation); break;
+            case ActionKind.Delay: await Task.Delay(Delays.Roll(step.DelayMs, step.DelayMaxMs), cancellation); break;
             case ActionKind.Key: InputSender.Combo(step.Value); break;
             case ActionKind.KeyDown:
                 ushort downKey = VirtualKeys.Parse(step.Value);

@@ -13,6 +13,8 @@ public sealed class MacroStep
     public ActionKind Kind { get; set; } = ActionKind.Key;
     public string Value { get; set; } = "";
     public int DelayMs { get; set; } = 50;
+    /// <summary>When above <see cref="DelayMs"/>, a Delay step waits a random time from DelayMs to this, rolled on every run.</summary>
+    public int? DelayMaxMs { get; set; }
 
     /// <summary>The buttons a MouseDown or MouseUp step can hold, by the index <see cref="Input.InputSender.MouseButton"/> takes.</summary>
     public static readonly string[] MouseButtons = ["Left", "Right", "Middle", "Back", "Forward"];
@@ -20,13 +22,32 @@ public sealed class MacroStep
     /// <summary>A MouseDown or MouseUp step's button as an index into <see cref="MouseButtons"/>; Left when unknown.</summary>
     public int MouseButton => Math.Max(0, Array.IndexOf(MouseButtons, Value));
 
-    public MacroStep Clone() => new() { Kind = Kind, Value = Value, DelayMs = DelayMs };
+    public MacroStep Clone() => new() { Kind = Kind, Value = Value, DelayMs = DelayMs, DelayMaxMs = DelayMaxMs };
     public override string ToString() => Kind switch
     {
-        ActionKind.Delay => $"Delay {DelayMs} ms",
+        ActionKind.Delay => DelayMaxMs > DelayMs ? $"Delay {DelayMs}-{DelayMaxMs} ms" : $"Delay {DelayMs} ms",
         ActionKind.Key or ActionKind.KeyDown or ActionKind.KeyUp or ActionKind.Text or ActionKind.Launch or ActionKind.Wheel or ActionKind.MouseDown or ActionKind.MouseUp => $"{Kind}: {Value}",
         _ => Kind.ToString()
     };
+}
+
+public static class Delays
+{
+    public const int Max = 60000;
+
+    /// <summary>A delay in milliseconds: <paramref name="min"/>, or a random time up to <paramref name="max"/> when that is larger.</summary>
+    public static int Roll(int min, int? max)
+    {
+        min = Math.Clamp(min, 0, Max);
+        return max is int top && top > min ? Random.Shared.Next(min, Math.Min(top, Max) + 1) : min;
+    }
+
+    /// <summary>The middle of a range, for the mouse's on-board memory, which can only store fixed delays.</summary>
+    public static int Middle(int min, int? max)
+    {
+        min = Math.Clamp(min, 0, Max);
+        return max is int top && top > min ? (min + Math.Min(top, Max)) / 2 : min;
+    }
 }
 
 public sealed class MacroDefinition
@@ -37,6 +58,8 @@ public sealed class MacroDefinition
     public List<MacroStep> Steps { get; set; } = [];
     /// <summary>When set, recorded Delay steps are ignored and this delay separates every action.</summary>
     public int? StandardDelayMs { get; set; }
+    /// <summary>When above <see cref="StandardDelayMs"/>, each gap is a random time from the standard delay to this.</summary>
+    public int? StandardDelayMaxMs { get; set; }
     public override string ToString() => Name;
 }
 

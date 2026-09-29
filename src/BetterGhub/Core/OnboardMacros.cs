@@ -18,7 +18,7 @@ public static class OnboardMacros
     /// <summary>
     /// A BetterGhub macro as on-board byte code, or null with <paramref name="reason"/> when the mouse can't play it.
     /// It mirrors <see cref="MacroEngine"/>: "while held" repeats with the same pause between rounds, and keys
-    /// still held at the end are released.
+    /// still held at the end are released. The mouse can't randomize, so a delay range is stored as its middle.
     /// </summary>
     public static byte[]? Encode(MacroDefinition macro, out string reason)
     {
@@ -39,7 +39,7 @@ public static class OnboardMacros
             if (macro.StandardDelayMs is int standard)
             {
                 if (step.Kind == ActionKind.Delay) continue;
-                if (!first) Wait(standard);
+                if (!first) Wait(Delays.Middle(standard, macro.StandardDelayMaxMs));
             }
             first = false;
             if (Tap(step) is { } tap)
@@ -50,7 +50,7 @@ public static class OnboardMacros
             switch (step.Kind)
             {
                 case ActionKind.Delay:
-                    Wait(step.DelayMs);
+                    Wait(Delays.Middle(step.DelayMs, step.DelayMaxMs));
                     break;
                 case ActionKind.Key when OnboardProfiles.KeyCode(step.Value) is var (modifiers, key):
                     code.AddRange([KeyPress, modifiers, key, KeyRelease, modifiers, key]);
@@ -85,7 +85,7 @@ public static class OnboardMacros
         }
         if (macro.Mode == MacroMode.WhileHeld)
         {
-            Wait(Math.Max(20, macro.StandardDelayMs ?? 0));
+            Wait(Math.Max(20, macro.StandardDelayMs is int gap ? Delays.Middle(gap, macro.StandardDelayMaxMs) : 0));
             code.Add(RepeatWhilePressed);
         }
         for (int i = held.Count - 1; i >= 0; i--) code.AddRange([KeyRelease, held[i].Modifiers, held[i].Key]);

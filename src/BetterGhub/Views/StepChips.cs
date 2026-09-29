@@ -49,12 +49,19 @@ internal static class StepChips
         ActionKind.NextTrack => "Next track",
         ActionKind.PreviousTrack => "Previous track",
         ActionKind.Launch => step.Value.Length == 0 ? "Choose app…" : System.IO.Path.GetFileNameWithoutExtension(step.Value),
-        ActionKind.Delay => FormatDelay(step.DelayMs).Value,
+        ActionKind.Delay => FormatDelay(step.DelayMs, step.DelayMaxMs).Value,
         _ => step.Kind.ToString()
     };
 
     public static (string Value, string Unit) FormatDelay(int ms) =>
-        ms >= 1000 ? ((ms / 1000.0).ToString(ms % 1000 == 0 ? "0" : ms % 100 == 0 ? "0.0" : "0.00"), "s") : (ms.ToString(), "ms");
+        ms >= 1000 ? (Seconds(ms), "s") : (ms.ToString(), "ms");
+
+    /// <summary>A delay or random range such as "50–120 ms"; a range reaching a second is shown in seconds throughout.</summary>
+    public static (string Value, string Unit) FormatDelay(int min, int? max) =>
+        max is not int top || top <= min ? FormatDelay(min)
+            : top >= 1000 ? ($"{Seconds(min)}–{Seconds(top)}", "s") : ($"{min}–{top}", "ms");
+
+    private static string Seconds(int ms) => (ms / 1000.0).ToString(ms % 1000 == 0 ? "0" : ms % 100 == 0 ? "0.0" : "0.00");
 
     /// <summary>A timeline element. Key and mouse button down/up get a ▼/▲ marker like G HUB.</summary>
     public static FrameworkElement Build(MacroStep step, Action? click, bool selected, bool faded = false)
@@ -63,16 +70,18 @@ internal static class StepChips
         FrameworkElement body;
         if (family == Family.Delay)
         {
-            (string value, string unit) = FormatDelay(step.DelayMs);
+            bool random = step.DelayMaxMs > step.DelayMs;
+            (string value, string unit) = FormatDelay(step.DelayMs, step.DelayMaxMs);
             StackPanel stack = new() { MinWidth = 44, Margin = new Thickness(2, 0, 2, 0) };
             stack.Children.Add(new TextBlock { Text = value, FontSize = 16, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Foreground = Ui.Brush("Text") });
             stack.Children.Add(new Border { Height = 1.5, Background = Ui.Brush("Muted"), Margin = new Thickness(0, 1, 0, 1), Width = 40 });
-            stack.Children.Add(new TextBlock { Text = unit, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, Foreground = Ui.Brush("Muted") });
+            stack.Children.Add(new TextBlock { Text = random ? $"{unit} · random" : unit, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, Foreground = Ui.Brush("Muted") });
             body = new Border
             {
                 Child = stack, Padding = new Thickness(6, 3, 6, 3), CornerRadius = new CornerRadius(8),
                 Background = Brushes.Transparent, BorderThickness = new Thickness(1.5),
-                BorderBrush = selected ? Ui.Brush("Accent") : Brushes.Transparent, VerticalAlignment = VerticalAlignment.Center
+                BorderBrush = selected ? Ui.Brush("Accent") : Brushes.Transparent, VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = random ? $"Waits a random {value} {unit} each time" : null
             };
         }
         else
