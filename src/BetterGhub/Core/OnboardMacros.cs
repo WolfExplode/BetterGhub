@@ -27,6 +27,7 @@ public static class OnboardMacros
         if (macro.Steps.Count == 0) { reason = "it has no steps yet"; return null; }
         List<byte> code = [];
         List<(byte Modifiers, byte Key)> held = [];
+        List<byte> heldButtons = [];
         void Wait(int ms)
         {
             ms = Math.Clamp(ms, 0, 60000);
@@ -63,11 +64,22 @@ public static class OnboardMacros
                     if (!held.Remove(up)) break;
                     code.AddRange([KeyRelease, up.Modifiers, up.Key]);
                     break;
+                case ActionKind.MouseDown:
+                    byte press = ButtonMask(step);
+                    if (heldButtons.Contains(press)) break;
+                    heldButtons.Add(press);
+                    code.AddRange([ButtonDown, 0, press]);
+                    break;
+                case ActionKind.MouseUp:
+                    byte release = ButtonMask(step);
+                    if (!heldButtons.Remove(release)) break;
+                    code.AddRange([ButtonUp, 0, release]);
+                    break;
                 case ActionKind.Key or ActionKind.KeyDown or ActionKind.KeyUp:
                     reason = $"the mouse has no code for {step.Value}";
                     return null;
                 default:
-                    reason = "only keys, media keys, clicks and delays can be stored on the mouse";
+                    reason = "only keys, media keys, mouse buttons and delays can be stored on the mouse";
                     return null;
             }
         }
@@ -77,6 +89,7 @@ public static class OnboardMacros
             code.Add(RepeatWhilePressed);
         }
         for (int i = held.Count - 1; i >= 0; i--) code.AddRange([KeyRelease, held[i].Modifiers, held[i].Key]);
+        foreach (byte button in heldButtons) code.AddRange([ButtonUp, 0, button]);
         code.Add(End);
         if (code.Count > Capacity(255)) { reason = "it's too long to fit on the mouse"; return null; }
         return [.. code];
@@ -101,6 +114,9 @@ public static class OnboardMacros
         if (media is null || OnboardProfiles.ConsumerUsage(media) is not int usage) return null;
         return [ConsumerDown, (byte)(usage >> 8), (byte)usage, ConsumerUp, (byte)(usage >> 8), (byte)usage];
     }
+
+    /// <summary>A MouseDown or MouseUp step's button as a binding's button mask (left 01, right 02, middle 04, back 08, forward 10).</summary>
+    private static byte ButtonMask(MacroStep step) => (byte)(1 << step.MouseButton);
 
     private static string ModeLabel(MacroMode mode) => mode == MacroMode.Toggle ? "Toggle" : "Sequence";
 

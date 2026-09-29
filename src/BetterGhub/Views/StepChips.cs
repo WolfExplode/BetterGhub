@@ -16,7 +16,7 @@ internal static class StepChips
     {
         ActionKind.Key or ActionKind.KeyDown or ActionKind.KeyUp => Family.Key,
         ActionKind.Text => Family.Text,
-        ActionKind.LeftClick or ActionKind.RightClick or ActionKind.MiddleClick or ActionKind.Wheel => Family.Mouse,
+        ActionKind.LeftClick or ActionKind.RightClick or ActionKind.MiddleClick or ActionKind.Wheel or ActionKind.MouseDown or ActionKind.MouseUp => Family.Mouse,
         ActionKind.Launch => Family.Launch,
         ActionKind.Delay => Family.Delay,
         _ => Family.Media
@@ -40,6 +40,7 @@ internal static class StepChips
         ActionKind.LeftClick => "Left click",
         ActionKind.RightClick => "Right click",
         ActionKind.MiddleClick => "Middle click",
+        ActionKind.MouseDown or ActionKind.MouseUp => MacroStep.MouseButtons[step.MouseButton],
         ActionKind.Wheel => int.TryParse(step.Value, out int t) && t < 0 ? $"Scroll down {-t}" : $"Scroll up {(int.TryParse(step.Value, out int u) ? u : 1)}",
         ActionKind.VolumeUp => "Volume up",
         ActionKind.VolumeDown => "Volume down",
@@ -55,7 +56,7 @@ internal static class StepChips
     public static (string Value, string Unit) FormatDelay(int ms) =>
         ms >= 1000 ? ((ms / 1000.0).ToString(ms % 1000 == 0 ? "0" : ms % 100 == 0 ? "0.0" : "0.00"), "s") : (ms.ToString(), "ms");
 
-    /// <summary>A timeline element. Key down/up get a ▼/▲ marker like G HUB.</summary>
+    /// <summary>A timeline element. Key and mouse button down/up get a ▼/▲ marker like G HUB.</summary>
     public static FrameworkElement Build(MacroStep step, Action? click, bool selected, bool faded = false)
     {
         Family family = FamilyOf(step.Kind);
@@ -94,6 +95,8 @@ internal static class StepChips
             {
                 ActionKind.KeyDown => $"{step.Value} down",
                 ActionKind.KeyUp => $"{step.Value} up",
+                ActionKind.MouseDown => $"{MacroStep.MouseButtons[step.MouseButton]} mouse button down",
+                ActionKind.MouseUp => $"{MacroStep.MouseButtons[step.MouseButton]} mouse button up",
                 ActionKind.Text => step.Value,
                 ActionKind.Launch => step.Value,
                 _ => null
@@ -107,9 +110,9 @@ internal static class StepChips
         cell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(12) });
         Grid.SetRow(body, 1);
         cell.Children.Add(body);
-        if (step.Kind is ActionKind.KeyDown or ActionKind.KeyUp)
+        if (step.Kind is ActionKind.KeyDown or ActionKind.KeyUp or ActionKind.MouseDown or ActionKind.MouseUp)
         {
-            bool up = step.Kind == ActionKind.KeyUp;
+            bool up = step.Kind is ActionKind.KeyUp or ActionKind.MouseUp;
             Polygon marker = new()
             {
                 Points = up ? [new Point(0, 8), new Point(6, 1), new Point(12, 8)] : [new Point(0, 2), new Point(6, 9), new Point(12, 2)],

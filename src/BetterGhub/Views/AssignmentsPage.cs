@@ -26,8 +26,6 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private bool calibrating;
     /// <summary>Scroll the list to the selected control's assignment on the next render, after picking a control.</summary>
     private bool revealCurrent;
-    /// <summary>Left and right click stay locked until the warning is acknowledged, once per session.</summary>
-    private readonly HashSet<string> unlockedClicks = [];
 
     public AssignmentsPage(MouseService service, MainWindow shell)
     {
@@ -158,13 +156,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         if (service.Settings.BitFor(control) is not int bit) return;
         if (id == BuiltinActions.GShift && diagram.ShiftLayer) { shell.ShowToast("G-Shift can't be assigned on the G-Shift layer"); return; }
         if (id == BuiltinActions.DpiShift && control.IsWheel) { shell.ShowToast("DPI Shift can't be assigned to the wheel"); return; }
-        if (ClickLocked(control))
-        {
-            SelectControl(control.Id);
-            shell.ShowToast($"Read the warning and choose Change anyway before reassigning {control.DefaultAction.ToLowerInvariant()}");
-            return;
-        }
-        if (!service.Assign(diagram.ShiftLayer, bit, id)) return; // The service already explained why.
+        if (!Assign(bit, id)) return; // The service already explained why.
         shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(id)}");
         Refresh();
     }
@@ -172,7 +164,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private void ResetControl(MouseControl control)
     {
         if (service.Settings.BitFor(control) is not int bit) return;
-        service.Assign(diagram.ShiftLayer, bit, null);
+        Assign(bit, null);
         shell.ShowToast(diagram.ShiftLayer ? $"{control.Label} uses its Default layer action" : $"{control.Label} reset to {control.DefaultAction.ToLowerInvariant()}");
         Refresh();
     }
@@ -266,7 +258,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         MouseProfile profile = service.ActiveProfile;
         int? bit = service.Settings.BitFor(selected);
         // Notices sit above the picker in the fixed header; without a picker they scroll with the rest.
-        StackPanel top = bit is not null && !ClickLocked(selected) ? header : panel;
+        StackPanel top = bit is not null ? header : panel;
 
         if (diagram.ShiftLayer)
             top.Children.Add(Ui.Text(
@@ -289,11 +281,6 @@ internal sealed class AssignmentsPage : UserControl, IPage
             top.Children.Add(reset.With(new Thickness(0, 0, 0, 22)));
         }
         if (bit is null) return;
-        if (ClickLocked(selected))
-        {
-            top.Children.Add(ClickWarning().With(new Thickness(0, 0, 8, 22)));
-            return;
-        }
 
         // Assignment picker
         header.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
@@ -531,7 +518,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         };
         assign.Click += (_, _) =>
         {
-            if (!service.Assign(diagram.ShiftLayer, bit, id)) return; // The service already explained why.
+            if (!Assign(bit, id)) return; // The service already explained why.
             shell.ShowToast($"{selected.Label} → {service.Settings.DescribeAssignment(id)}");
             Refresh();
         };
@@ -603,7 +590,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     {
         Microsoft.Win32.OpenFileDialog dialog = new() { Filter = "Applications (*.exe)|*.exe|All files (*.*)|*.*", Title = "Choose an application" };
         if (dialog.ShowDialog(Window.GetWindow(this)) != true) return;
-        service.Assign(diagram.ShiftLayer, bit, Assignments.LaunchId(dialog.FileName));
+        Assign(bit, Assignments.LaunchId(dialog.FileName));
         Refresh();
     }
 
@@ -671,7 +658,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
             {
                 Stop();
                 if (cancel) return;
-                service.Assign(diagram.ShiftLayer, bit, Assignments.KeyId(string.Join("+", parts)));
+                Assign(bit, Assignments.KeyId(string.Join("+", parts)));
                 Refresh();
             });
             return true;
@@ -688,7 +675,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         service.Settings.Macros.Add(macro);
         // The mouse can't store a macro without steps, so on-board it's assigned once it has some.
         if (service.IsOnboard) service.Save();
-        else service.Assign(diagram.ShiftLayer, bit, macro.Id);
+        else Assign(bit, macro.Id);
         shell.OpenMacro(macro);
     }
 
@@ -700,32 +687,35 @@ internal sealed class AssignmentsPage : UserControl, IPage
         _ => "Sequence"
     };
 
-    // ── Click lock ────────────────────────────────────────────────────────────
+    // ── Click safety ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Left or right click on the Default layer that hasn't been unlocked yet. The G-Shift layer isn't locked:
-    /// letting go of G-Shift always brings the normal click back.
+    /// Assigns to the selected layer. Taking left or right click off its Default-layer button starts a countdown
+    /// that puts it back unless the change is kept, so a mouse left without a working click recovers by itself.
+    /// The G-Shift layer is exempt: letting go of G-Shift always brings the normal click back.
     /// </summary>
-    private bool ClickLocked(MouseControl control) =>
-        control.Id is "G1" or "G2" && !diagram.ShiftLayer && !unlockedClicks.Contains(control.Id);
-
-    private Border ClickWarning()
+    private bool Assign(int bit, string? id)
     {
-        string click = selected.DefaultAction.ToLowerInvariant();
-        string undo = selected.Id == "G1"
-            ? "right-click Primary click on the diagram and choose Reset to default"
-            : "select Secondary click and pick Secondary Click under System";
-        StackPanel content = new();
-        content.Children.Add(Ui.Row(10, Ui.Glyph("", 16, "Warning"), Ui.Text($"Reassign {click}?", bold: true, color: "Warning")));
-        content.Children.Add(Ui.Text(
-            $"{selected.Label} stops sending {click} as soon as you pick something else, everywhere in Windows. "
-            + $"To get it back, {undo}.",
-            "Body", size: 12, wrap: true).With(new Thickness(26, 4, 0, 10)));
-        Button unlock = Ui.Button("Change anyway", () => { unlockedClicks.Add(selected.Id); RenderPanel(); }, "Btn");
-        unlock.HorizontalAlignment = HorizontalAlignment.Left;
-        content.Children.Add(unlock.With(new Thickness(26, 0, 0, 0)));
-        return new Border { Background = Ui.Brush("WarningDim"), CornerRadius = new CornerRadius(10), Padding = new Thickness(14), Child = content };
+        bool shift = diagram.ShiftLayer;
+        MouseProfile profile = service.ActiveProfile;
+        string? before = (shift ? profile.ShiftAssignments : profile.Assignments).GetValueOrDefault(bit);
+        if (!service.Assign(shift, bit, id)) return false;
+        if (!shift && service.Settings.ControlFor(bit) is { Id: "G1" or "G2" } control && Clicks(control, before) && !Clicks(control, id))
+            shell.ConfirmChange($"You just unassigned your {control.DefaultAction.ToLowerInvariant()}!", () =>
+            {
+                if (service.ActiveProfile == profile) service.Assign(false, bit, before);
+                else
+                {
+                    if (before is null) profile.Assignments.Remove(bit); else profile.Assignments[bit] = before;
+                    service.Save();
+                }
+            });
+        return true;
     }
+
+    /// <summary>Whether <paramref name="id"/> on left or right click still sends that click.</summary>
+    private static bool Clicks(MouseControl control, string? id) =>
+        string.IsNullOrEmpty(id) || id == (control.Id == "G1" ? BuiltinActions.LeftClick : BuiltinActions.RightClick);
 
     // ── Calibration ───────────────────────────────────────────────────────────
 

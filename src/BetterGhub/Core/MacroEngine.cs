@@ -44,6 +44,7 @@ internal sealed class MacroEngine : IDisposable
         _ = Task.Run(async () =>
         {
             HashSet<ushort> heldKeys = [];
+            HashSet<int> heldButtons = [];
             try
             {
                 if (sequence)
@@ -54,13 +55,13 @@ internal sealed class MacroEngine : IDisposable
                         index = sequencePositions.GetValueOrDefault(trigger) % steps.Count;
                         sequencePositions[trigger] = index + 1;
                     }
-                    await Execute(steps[index], heldKeys, cancellation.Token);
+                    await Execute(steps[index], heldKeys, heldButtons, cancellation.Token);
                 }
                 else
                 {
                     do
                     {
-                        await RunAll(steps, standardDelay, heldKeys, cancellation.Token);
+                        await RunAll(steps, standardDelay, heldKeys, heldButtons, cancellation.Token);
                         await Task.Delay(repeat ? Math.Max(20, standardDelay ?? 0) : 0, cancellation.Token);
                     } while (repeat && !cancellation.IsCancellationRequested);
                 }
@@ -74,6 +75,11 @@ internal sealed class MacroEngine : IDisposable
                     try { InputSender.Key(key, up: true); }
                     catch (Exception) { /* Continue releasing other held keys. */ }
                 }
+                foreach (int button in heldButtons)
+                {
+                    try { InputSender.MouseButton(button, up: true); }
+                    catch (Exception) { /* Continue releasing other held buttons. */ }
+                }
                 lock (gate)
                 {
                     if (running.GetValueOrDefault(trigger) == cancellation) running.Remove(trigger);
@@ -83,7 +89,7 @@ internal sealed class MacroEngine : IDisposable
         });
     }
 
-    private static async Task RunAll(List<MacroStep> steps, int? standardDelay, HashSet<ushort> heldKeys, CancellationToken cancellation)
+    private static async Task RunAll(List<MacroStep> steps, int? standardDelay, HashSet<ushort> heldKeys, HashSet<int> heldButtons, CancellationToken cancellation)
     {
         bool first = true;
         foreach (MacroStep step in steps)
@@ -93,12 +99,12 @@ internal sealed class MacroEngine : IDisposable
                 if (step.Kind == ActionKind.Delay) continue;
                 if (!first) await Task.Delay(Math.Clamp(standardDelay.Value, 0, 60000), cancellation);
             }
-            await Execute(step, heldKeys, cancellation);
+            await Execute(step, heldKeys, heldButtons, cancellation);
             first = false;
         }
     }
 
-    private static async Task Execute(MacroStep step, HashSet<ushort> heldKeys, CancellationToken cancellation)
+    private static async Task Execute(MacroStep step, HashSet<ushort> heldKeys, HashSet<int> heldButtons, CancellationToken cancellation)
     {
         cancellation.ThrowIfCancellationRequested();
         switch (step.Kind)
@@ -117,6 +123,12 @@ internal sealed class MacroEngine : IDisposable
             case ActionKind.LeftClick: InputSender.LeftClick(); break;
             case ActionKind.RightClick: InputSender.RightClick(); break;
             case ActionKind.MiddleClick: InputSender.MiddleClick(); break;
+            case ActionKind.MouseDown:
+                if (heldButtons.Add(step.MouseButton)) InputSender.MouseButton(step.MouseButton, up: false);
+                break;
+            case ActionKind.MouseUp:
+                if (heldButtons.Remove(step.MouseButton)) InputSender.MouseButton(step.MouseButton, up: true);
+                break;
             case ActionKind.Wheel: InputSender.Wheel(int.TryParse(step.Value, out int ticks) ? ticks : 1); break;
             case ActionKind.VolumeUp: InputSender.Combo("VolumeUp"); break;
             case ActionKind.VolumeDown: InputSender.Combo("VolumeDown"); break;

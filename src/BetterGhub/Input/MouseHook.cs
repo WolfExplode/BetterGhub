@@ -6,7 +6,7 @@ namespace BetterGhub.Input;
 /// <summary>
 /// Low-level hook that blocks the normal Windows action of a standard mouse input.
 /// It sees every mouse on the system, so the callback decides per physical control id
-/// (see <see cref="Core.MouseControls"/>): G2 right, G3 middle, G4 back (X1), G5 forward (X2), wheel and tilt.
+/// (see <see cref="Core.MouseControls"/>): G1 left, G2 right, G3 middle, G4 back (X1), G5 forward (X2), wheel and tilt.
 /// </summary>
 internal sealed class MouseHook : IDisposable
 {
@@ -31,6 +31,7 @@ internal sealed class MouseHook : IDisposable
             {
                 string? control = unchecked((int)wParam) switch
                 {
+                    0x0201 or 0x0202 => "G1",
                     0x0204 or 0x0205 => "G2",
                     0x0207 or 0x0208 => "G3",
                     0x020B or 0x020C => (data.MouseData >> 16) == 1 ? "G4" : "G5",

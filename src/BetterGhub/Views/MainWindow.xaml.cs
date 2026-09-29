@@ -238,7 +238,8 @@ public partial class MainWindow : Window
 
     protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
     {
-        if (e.Key == System.Windows.Input.Key.Escape && ProfilePopup.IsOpen) { CloseProfileMenu(); e.Handled = true; }
+        if (e.Key == System.Windows.Input.Key.Enter && keepChange is not null) { keepChange(); ShowToast("Change kept"); e.Handled = true; }
+        else if (e.Key == System.Windows.Input.Key.Escape && ProfilePopup.IsOpen) { CloseProfileMenu(); e.Handled = true; }
         else if (UndoKey(e) is bool redo && TryUndo(redo)) e.Handled = true;
         base.OnPreviewKeyDown(e);
     }
@@ -346,6 +347,68 @@ public partial class MainWindow : Window
         row.Children.Add(ShellIcons.Element(profile, 16).With(new Thickness(0, 0, 10, 0)));
         row.Children.Add(new TextBlock { Text = profile.Name, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         return row;
+    }
+
+    private const int ConfirmSeconds = 15;
+    private DispatcherTimer? confirmTimer;
+    private Action? keepChange;
+
+    /// <summary>
+    /// A bar along the bottom (the top is the window's drag area, which swallows clicks) that counts down and runs <paramref name="revert"/> unless Keep is chosen (or Enter
+    /// pressed, for when the change took away the click needed to press it). A newer change replaces the pending one,
+    /// which is kept.
+    /// </summary>
+    internal void ConfirmChange(string warning, Action revert)
+    {
+        keepChange?.Invoke();
+        int left = ConfirmSeconds;
+        TextBlock message = new() { FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.White };
+        void Update() => message.Text = $"{warning}  Keep the change? Reverting in {left} s. Press Enter to keep.";
+        Update();
+
+        System.Windows.Shapes.Rectangle fill = new()
+        {
+            Fill = Ui.Brush("Danger"), HorizontalAlignment = HorizontalAlignment.Stretch,
+            RenderTransformOrigin = new Point(0, 0), RenderTransform = new ScaleTransform(1, 1)
+        };
+        fill.RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 0, TimeSpan.FromSeconds(ConfirmSeconds)));
+        Button keep = Ui.Button("Keep", () => { keepChange?.Invoke(); ShowToast("Change kept"); }, "PrimaryBtn");
+        keep.Margin = new Thickness(16, 0, 16, 0);
+        keep.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel row = new() { Margin = new Thickness(24, 10, 8, 10) };
+        DockPanel.SetDock(keep, Dock.Right);
+        row.Children.Add(keep);
+        row.Children.Add(message);
+        Border bar = new()
+        {
+            Background = Ui.Brush("Surface2"), BorderBrush = Ui.Brush("LineStrong"), BorderThickness = new Thickness(0, 1, 0, 0),
+            VerticalAlignment = VerticalAlignment.Bottom, Child = new Grid { Children = { fill, row } }
+        };
+        Grid.SetColumnSpan(bar, 2);
+        Panel.SetZIndex(bar, 100);
+        Root.Children.Add(bar);
+        // Lift toasts above the bar while it's showing.
+        Toast.Margin = new Thickness(0, 0, 0, 90);
+
+        DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
+        void Close()
+        {
+            timer.Stop();
+            Root.Children.Remove(bar);
+            if (confirmTimer == timer) Toast.Margin = new Thickness(0, 0, 0, 26);
+            if (confirmTimer == timer) { confirmTimer = null; keepChange = null; }
+        }
+        timer.Tick += (_, _) =>
+        {
+            if (--left > 0) { Update(); return; }
+            Close();
+            revert();
+            ShowToast("Change reverted");
+            (PageHost.Content as IPage)?.Refresh();
+        };
+        timer.Start();
+        confirmTimer = timer;
+        keepChange = Close;
     }
 
     internal void ShowToast(string text)

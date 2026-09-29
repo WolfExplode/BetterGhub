@@ -6,7 +6,7 @@ namespace BetterGhub.Core;
 public enum MacroMode { Once, WhileHeld, Toggle, Sequence }
 
 // Append new kinds at the end: settings store them by name, but keep the order stable anyway.
-public enum ActionKind { Key, KeyDown, KeyUp, Text, Delay, LeftClick, RightClick, MiddleClick, Wheel, VolumeUp, VolumeDown, Mute, Launch, PlayPause, NextTrack, PreviousTrack }
+public enum ActionKind { Key, KeyDown, KeyUp, Text, Delay, LeftClick, RightClick, MiddleClick, Wheel, VolumeUp, VolumeDown, Mute, Launch, PlayPause, NextTrack, PreviousTrack, MouseDown, MouseUp }
 
 public sealed class MacroStep
 {
@@ -14,11 +14,17 @@ public sealed class MacroStep
     public string Value { get; set; } = "";
     public int DelayMs { get; set; } = 50;
 
+    /// <summary>The buttons a MouseDown or MouseUp step can hold, by the index <see cref="Input.InputSender.MouseButton"/> takes.</summary>
+    public static readonly string[] MouseButtons = ["Left", "Right", "Middle", "Back", "Forward"];
+
+    /// <summary>A MouseDown or MouseUp step's button as an index into <see cref="MouseButtons"/>; Left when unknown.</summary>
+    public int MouseButton => Math.Max(0, Array.IndexOf(MouseButtons, Value));
+
     public MacroStep Clone() => new() { Kind = Kind, Value = Value, DelayMs = DelayMs };
     public override string ToString() => Kind switch
     {
         ActionKind.Delay => $"Delay {DelayMs} ms",
-        ActionKind.Key or ActionKind.KeyDown or ActionKind.KeyUp or ActionKind.Text or ActionKind.Launch or ActionKind.Wheel => $"{Kind}: {Value}",
+        ActionKind.Key or ActionKind.KeyDown or ActionKind.KeyUp or ActionKind.Text or ActionKind.Launch or ActionKind.Wheel or ActionKind.MouseDown or ActionKind.MouseUp => $"{Kind}: {Value}",
         _ => Kind.ToString()
     };
 }

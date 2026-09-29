@@ -20,11 +20,19 @@ internal sealed class MacrosPage : UserControl, IPage
     private readonly ContentControl editorHost = new() { Focusable = false };
     private readonly TextBox search = new() { Margin = new Thickness(0, 0, 8, 12) };
     private MacroDefinition? macro;
-    private int selectedStep = -1;
+    private int focusStep = -1;
+    /// <summary>Where a Shift-click range started; -1 when only <see cref="SelectedStep"/> is selected.</summary>
+    private int anchorStep = -1;
+    /// <summary>The selected action, or the end of a Shift-click range. Setting it selects just that one.</summary>
+    private int SelectedStep { get => focusStep; set { focusStep = value; anchorStep = -1; } }
+    /// <summary>The selected actions, first to last.</summary>
+    private (int First, int Last) Selection => anchorStep < 0 ? (focusStep, focusStep) : (Math.Min(anchorStep, focusStep), Math.Max(anchorStep, focusStep));
+    private bool MultiSelected => anchorStep >= 0 && anchorStep != focusStep;
     private WrapPanel? timeline;
     private Border? dropMarker;
     private StackPanel? inspector;
     private Button? testButton;
+    private Button? stepDelete;
     private DispatcherTimer? countdown;
 
     public MacrosPage(MouseService service, MainWindow shell)
@@ -59,6 +67,20 @@ internal sealed class MacrosPage : UserControl, IPage
 
         macro = service.Settings.Macros.FirstOrDefault();
         Refresh();
+
+        // On the window, so Delete works wherever focus is (often nothing inside the page after a chip click).
+        Window? host = null;
+        Loaded += (_, _) => { host = Window.GetWindow(this); if (host is not null) host.PreviewKeyDown += DeleteKey; };
+        Unloaded += (_, _) => { if (host is not null) host.PreviewKeyDown -= DeleteKey; host = null; };
+    }
+
+    /// <summary>Delete presses the selected action's delete button: once arms it, again deletes. Text boxes keep the key.</summary>
+    private void DeleteKey(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Delete || Keyboard.Modifiers != ModifierKeys.None || !IsVisible || Keyboard.FocusedElement is TextBoxBase) return;
+        if (macro is null || SelectedStep < 0 || SelectedStep >= macro.Steps.Count || stepDelete is not { IsVisible: true } button) return;
+        button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        e.Handled = true;
     }
 
     public void Refresh()
@@ -66,7 +88,7 @@ internal sealed class MacrosPage : UserControl, IPage
         // By id, since undo puts back copies of the macros.
         if (macro is not null && !service.Settings.Macros.Contains(macro))
             macro = service.Settings.Macros.FirstOrDefault(m => m.Id == macro.Id) ?? service.Settings.Macros.FirstOrDefault();
-        if (macro is null || selectedStep >= macro.Steps.Count) selectedStep = -1;
+        if (macro is null || SelectedStep >= macro.Steps.Count || anchorStep >= macro.Steps.Count) SelectedStep = -1;
         RenderList();
         RenderEditor();
     }
@@ -74,13 +96,13 @@ internal sealed class MacrosPage : UserControl, IPage
     public void Select(MacroDefinition target)
     {
         macro = target;
-        selectedStep = -1;
+        SelectedStep = -1;
         Refresh();
     }
 
     internal void SelectStep(int index)
     {
-        selectedStep = index;
+        SelectedStep = index;
         RenderTimeline();
     }
 
@@ -345,7 +367,7 @@ internal sealed class MacrosPage : UserControl, IPage
         // Timeline
         editor.Children.Add(new Border { Height = 1, Background = Ui.Brush("Line"), Margin = new Thickness(0, 24, 0, 18) });
         DockPanel actionsHead = new() { Margin = new Thickness(0, 0, 0, 10) };
-        Button record = Ui.Button("Record keystrokes", () => Record(current), "Btn", "");
+        Button record = Ui.Button("Record keys & mouse", () => Record(current), "Btn", "");
         ((StackPanel)record.Content).Children[0].SetValue(TextBlock.ForegroundProperty, Ui.Brush("Danger"));
         DockPanel.SetDock(record, Dock.Right);
         actionsHead.Children.Add(record);
@@ -393,7 +415,7 @@ internal sealed class MacrosPage : UserControl, IPage
             int index = service.Settings.Macros.IndexOf(current);
             service.DeleteMacro(current);
             macro = service.Settings.Macros.Count == 0 ? null : service.Settings.Macros[Math.Min(index, service.Settings.Macros.Count - 1)];
-            selectedStep = -1;
+            SelectedStep = -1;
             shell.ShowToast($"Deleted {current.Name}");
             Refresh();
         }, "Delete macro");
@@ -412,11 +434,25 @@ internal sealed class MacrosPage : UserControl, IPage
         {
             int index = i;
             MacroStep step = macro.Steps[i];
-            timeline.Children.Add(EnableStepDrag(StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, index == selectedStep,
+            timeline.Children.Add(EnableStepDrag(StepChips.Build(step, () => ClickStep(index), index >= Selection.First && index <= Selection.Last,
                 faded: standard && step.Kind == ActionKind.Delay)));
         }
         timeline.Children.Add(AddTile());
         RenderInspector();
+    }
+
+    /// <summary>Selects a chip; with Shift held, selects everything from the current selection's start to it.</summary>
+    private void ClickStep(int index)
+    {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && macro is not null && SelectedStep >= 0 && SelectedStep < macro.Steps.Count)
+        {
+            int anchor = anchorStep >= 0 ? anchorStep : SelectedStep;
+            SelectedStep = index;
+            anchorStep = anchor;
+        }
+        else SelectedStep = index;
+        RenderTimeline();
+        inspector?.BringIntoView();
     }
 
     private FrameworkElement AddTile()
@@ -444,7 +480,7 @@ internal sealed class MacrosPage : UserControl, IPage
         {
             Style = Ui.Style("Btn"), Background = new SolidColorBrush(Color.FromRgb(0x6A, 0x14, 0x2A)), Foreground = Brushes.White,
             HorizontalContentAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 5), Padding = new Thickness(12, 9, 16, 9),
-            Content = Ui.Row(10, new Ellipse { Width = 12, Height = 12, Fill = Ui.Brush("Danger") }, new TextBlock { Text = "Record keystrokes", FontWeight = FontWeights.SemiBold })
+            Content = Ui.Row(10, new Ellipse { Width = 12, Height = 12, Fill = Ui.Brush("Danger") }, new TextBlock { Text = "Record keys & mouse", FontWeight = FontWeights.SemiBold })
         };
         recordItem.Click += (_, _) => { menu.IsOpen = false; Record(macro!); };
         items.Children.Add(recordItem);
@@ -471,9 +507,9 @@ internal sealed class MacrosPage : UserControl, IPage
     private void Insert(List<MacroStep> steps)
     {
         if (macro is null || steps.Count == 0) return;
-        int at = selectedStep >= 0 && selectedStep < macro.Steps.Count ? selectedStep + 1 : macro.Steps.Count;
+        int at = SelectedStep >= 0 && SelectedStep < macro.Steps.Count ? Selection.Last + 1 : macro.Steps.Count;
         macro.Steps.InsertRange(at, steps);
-        selectedStep = at + steps.Count - 1;
+        SelectedStep = at + steps.Count - 1;
         service.Save();
         RenderTimeline();
         RenderList();
@@ -515,9 +551,27 @@ internal sealed class MacrosPage : UserControl, IPage
     private void RenderInspector()
     {
         if (inspector is null || macro is null) return;
+        bool hasStep = SelectedStep >= 0 && SelectedStep < macro.Steps.Count;
+        // Never shrink while moving between actions: a shorter editor would pull the page up
+        // (when scrolled to the bottom) and shift the timeline out from under the cursor.
+        inspector.MinHeight = hasStep ? Math.Max(inspector.MinHeight, inspector.ActualHeight) : 0;
         inspector.Children.Clear();
-        if (selectedStep < 0 || selectedStep >= macro.Steps.Count) return;
-        MacroStep step = macro.Steps[selectedStep];
+        if (!hasStep) return;
+        if (MultiSelected)
+        {
+            (int first, int last) = Selection;
+            DockPanel multi = new();
+            StackPanel actions = Ui.Row(4, IconButton("", "Duplicate", Duplicate, true), StepDeleteButton());
+            DockPanel.SetDock(actions, Dock.Right);
+            multi.Children.Add(actions);
+            StackPanel summary = new();
+            summary.Children.Add(Ui.Text($"ACTIONS {first + 1}–{last + 1} OF {macro.Steps.Count} · {last - first + 1} SELECTED", "Overline").With(new Thickness(0, 8, 0, 0)));
+            summary.Children.Add(Ui.Text("Shift-click another action to change the range, or click one to select just it.", "Body", size: 12).With(new Thickness(0, 6, 0, 0)));
+            multi.Children.Add(summary);
+            inspector.Children.Add(new Border { Background = Ui.Brush("Surface"), CornerRadius = new CornerRadius(12), Padding = new Thickness(18, 16, 18, 16), Child = multi });
+            return;
+        }
+        MacroStep step = macro.Steps[SelectedStep];
         StepChips.Family family = StepChips.FamilyOf(step.Kind);
 
         Border card = new() { Background = Ui.Brush("Surface"), CornerRadius = new CornerRadius(12), Padding = new Thickness(18, 16, 18, 16) };
@@ -526,13 +580,13 @@ internal sealed class MacrosPage : UserControl, IPage
 
         DockPanel head = new() { Margin = new Thickness(0, 0, 0, 12) };
         StackPanel tools = Ui.Row(4,
-            IconButton("", "Move earlier", () => Move(-1), selectedStep > 0),
-            IconButton("", "Move later", () => Move(1), selectedStep < macro.Steps.Count - 1),
+            IconButton("", "Move earlier", () => Move(-1), SelectedStep > 0),
+            IconButton("", "Move later", () => Move(1), SelectedStep < macro.Steps.Count - 1),
             IconButton("", "Duplicate", Duplicate, true),
             StepDeleteButton());
         DockPanel.SetDock(tools, Dock.Right);
         head.Children.Add(tools);
-        head.Children.Add(Ui.Text($"ACTION {selectedStep + 1} OF {macro.Steps.Count} · {KindName(step.Kind).ToUpperInvariant()}", "Overline").With(new Thickness(0, 8, 0, 0)));
+        head.Children.Add(Ui.Text($"ACTION {SelectedStep + 1} OF {macro.Steps.Count} · {KindName(step.Kind).ToUpperInvariant()}", "Overline").With(new Thickness(0, 8, 0, 0)));
         body.Children.Add(head);
 
         switch (family)
@@ -547,7 +601,7 @@ internal sealed class MacrosPage : UserControl, IPage
                 body.Children.Add(Ui.Text("Typed as Unicode characters, so it works with any keyboard layout. New lines press Enter.", "Body", size: 12).With(new Thickness(0, 6, 0, 0)));
                 break;
             case StepChips.Family.Mouse:
-                body.Children.Add(Choices(step, [(ActionKind.LeftClick, "Left click", ""), (ActionKind.RightClick, "Right click", ""), (ActionKind.MiddleClick, "Middle click", ""), (ActionKind.Wheel, "Scroll up", "1"), (ActionKind.Wheel, "Scroll down", "-1")]));
+                body.Children.Add(MouseEditor(step));
                 break;
             case StepChips.Family.Media:
                 body.Children.Add(Choices(step, [(ActionKind.VolumeUp, "Volume up", ""), (ActionKind.VolumeDown, "Volume down", ""), (ActionKind.Mute, "Mute", ""), (ActionKind.PlayPause, "Play / pause", ""), (ActionKind.NextTrack, "Next track", ""), (ActionKind.PreviousTrack, "Previous track", "")]));
@@ -590,6 +644,8 @@ internal sealed class MacrosPage : UserControl, IPage
         ActionKind.Text => "Text",
         ActionKind.Delay => "Delay",
         ActionKind.Launch => "Launch application",
+        ActionKind.MouseDown => "Mouse button down",
+        ActionKind.MouseUp => "Mouse button up",
         ActionKind.LeftClick or ActionKind.RightClick or ActionKind.MiddleClick or ActionKind.Wheel => "Mouse",
         _ => "Media"
     };
@@ -631,12 +687,50 @@ internal sealed class MacrosPage : UserControl, IPage
         return panel;
     }
 
+    /// <summary>Clicks and scrolling, or holding and releasing a button, picked like a key step's edges.</summary>
+    private FrameworkElement MouseEditor(MacroStep step)
+    {
+        StackPanel panel = new();
+        StackPanel edges = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+        ActionKind? edge = step.Kind is ActionKind.MouseDown or ActionKind.MouseUp ? step.Kind : null;
+        foreach ((ActionKind? kind, string name) in new (ActionKind?, string)[] { (null, "Click & scroll"), (ActionKind.MouseDown, "Button down"), (ActionKind.MouseUp, "Button up") })
+        {
+            RadioButton option = new() { Content = name, Style = Ui.Style("Segment"), GroupName = "MouseEdge", IsChecked = edge == kind };
+            option.Click += (_, _) =>
+            {
+                if (edge == kind) return;
+                // Keep the button when switching: a left click becomes left down, and back.
+                int button = edge is null ? step.Kind switch { ActionKind.RightClick => 1, ActionKind.MiddleClick => 2, _ => 0 } : step.MouseButton;
+                if (kind is ActionKind held) { step.Kind = held; step.Value = MacroStep.MouseButtons[button]; }
+                else { step.Kind = button switch { 1 => ActionKind.RightClick, 2 => ActionKind.MiddleClick, _ => ActionKind.LeftClick }; step.Value = ""; }
+                service.Save();
+                RenderTimeline();
+            };
+            edges.Children.Add(option);
+        }
+        panel.Children.Add(new Border { Style = Ui.Style("SegmentHost"), Child = edges, Margin = new Thickness(0, 0, 0, 12) });
+        if (edge is ActionKind kindHeld)
+        {
+            panel.Children.Add(Choices(step, MacroStep.MouseButtons.Select(b => (kindHeld, b == "Back" || b == "Forward" ? b : $"{b} button", b)).ToArray()));
+            panel.Children.Add(Ui.Text(kindHeld == ActionKind.MouseDown
+                ? "Holds the button until a Button up step for it. Any button still held when the macro ends is released."
+                : "Releases the button held by an earlier Button down step.", "Body", size: 12).With(new Thickness(0, 2, 0, 0)));
+        }
+        else panel.Children.Add(Choices(step, [(ActionKind.LeftClick, "Left click", ""), (ActionKind.RightClick, "Right click", ""), (ActionKind.MiddleClick, "Middle click", ""), (ActionKind.Wheel, "Scroll up", "1"), (ActionKind.Wheel, "Scroll down", "-1")]));
+        return panel;
+    }
+
     private FrameworkElement Choices(MacroStep step, (ActionKind Kind, string Name, string Value)[] choices)
     {
         WrapPanel panel = new();
         foreach ((ActionKind kind, string name, string value) in choices)
         {
-            bool isCurrent = step.Kind == kind && (kind != ActionKind.Wheel || (value.StartsWith('-') == step.Value.StartsWith('-')));
+            bool isCurrent = step.Kind == kind && kind switch
+            {
+                ActionKind.Wheel => value.StartsWith('-') == step.Value.StartsWith('-'),
+                ActionKind.MouseDown or ActionKind.MouseUp => MacroStep.MouseButtons[step.MouseButton] == value,
+                _ => true
+            };
             RadioButton option = new() { Content = name, Style = Ui.Style("Tile"), GroupName = "Choice", IsChecked = isCurrent, Padding = new Thickness(14, 9, 14, 9), Margin = new Thickness(0, 0, 8, 8) };
             option.Click += (_, _) => { step.Kind = kind; step.Value = value; service.Save(); RenderTimeline(); };
             panel.Children.Add(option);
@@ -656,17 +750,18 @@ internal sealed class MacrosPage : UserControl, IPage
     {
         Button button = Ui.DeleteButton("", Remove, "Remove");
         button.Padding = new Thickness(9, 7, 9, 7);
+        stepDelete = button;
         return button;
     }
 
     private void UpdateSelectedChip()
     {
-        if (macro is null || timeline is null || selectedStep < 0 || selectedStep >= timeline.Children.Count - 1) return;
-        int index = selectedStep;
+        if (macro is null || timeline is null || SelectedStep < 0 || SelectedStep >= timeline.Children.Count - 1) return;
+        int index = SelectedStep;
         MacroStep step = macro.Steps[index];
         // UIElementCollection's indexer setter throws if the slot is occupied, so swap via remove + insert.
         timeline.Children.RemoveAt(index);
-        timeline.Children.Insert(index, EnableStepDrag(StepChips.Build(step, () => { selectedStep = index; RenderTimeline(); inspector?.BringIntoView(); }, true,
+        timeline.Children.Insert(index, EnableStepDrag(StepChips.Build(step, () => ClickStep(index), true,
             faded: macro.StandardDelayMs.HasValue && step.Kind == ActionKind.Delay)));
     }
 
@@ -732,7 +827,7 @@ internal sealed class MacrosPage : UserControl, IPage
             macro.Steps.RemoveAt(from);
             int to = target > from ? target - 1 : target;
             macro.Steps.Insert(to, step);
-            selectedStep = to;
+            SelectedStep = to;
             service.Save();
             RenderTimeline();
         };
@@ -774,19 +869,22 @@ internal sealed class MacrosPage : UserControl, IPage
     private void Move(int delta)
     {
         if (macro is null) return;
-        int target = selectedStep + delta;
+        int target = SelectedStep + delta;
         if (target < 0 || target >= macro.Steps.Count) return;
-        (macro.Steps[selectedStep], macro.Steps[target]) = (macro.Steps[target], macro.Steps[selectedStep]);
-        selectedStep = target;
+        (macro.Steps[SelectedStep], macro.Steps[target]) = (macro.Steps[target], macro.Steps[SelectedStep]);
+        SelectedStep = target;
         service.Save();
         RenderTimeline();
     }
 
+    /// <summary>Copies the selected actions in after the selection, and selects the copies.</summary>
     private void Duplicate()
     {
         if (macro is null) return;
-        macro.Steps.Insert(selectedStep + 1, macro.Steps[selectedStep].Clone());
-        selectedStep++;
+        (int first, int last) = Selection;
+        macro.Steps.InsertRange(last + 1, macro.Steps.GetRange(first, last - first + 1).Select(s => s.Clone()));
+        SelectedStep = last + 1 + (last - first);
+        if (last > first) anchorStep = last + 1;
         service.Save();
         RenderTimeline();
     }
@@ -794,8 +892,9 @@ internal sealed class MacrosPage : UserControl, IPage
     private void Remove()
     {
         if (macro is null) return;
-        macro.Steps.RemoveAt(selectedStep);
-        selectedStep = Math.Min(selectedStep, macro.Steps.Count - 1);
+        (int first, int last) = Selection;
+        macro.Steps.RemoveRange(first, last - first + 1);
+        SelectedStep = Math.Min(first, macro.Steps.Count - 1);
         service.Save();
         RenderTimeline();
         RenderList();
