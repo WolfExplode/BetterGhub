@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
+using BetterGhub.Core;
 using BetterGhub.Services;
 using BetterGhub.Views;
 
@@ -58,21 +60,37 @@ public partial class App : Application
             error.Handled = true;
         };
 
-        singleInstance = new Mutex(true, InstanceName, out bool created);
+        // --after <pid>: an instance handing over to this one (to run as administrator); let it finish exiting first.
+        int after = Array.IndexOf(args, "--after");
+        if (after >= 0 && after + 1 < args.Length && int.TryParse(args[after + 1], out int previousId))
+        {
+            try { using Process previous = Process.GetProcessById(previousId); previous.WaitForExit(10_000); }
+            catch (Exception) { /* Already gone. */ }
+        }
+        else if (!Elevation.IsElevated && Settings.PeekRunAsAdmin() && Elevation.TryStartElevated(args))
+        {
+            Shutdown();
+            return;
+        }
+
+        bool created;
+        try { singleInstance = new Mutex(true, InstanceName, out created); }
+        catch (UnauthorizedAccessException) { created = false; } // Held by an instance running as administrator.
         if (!created)
         {
             // Already running (maybe hidden in the tray): bring that window forward instead.
             if (EventWaitHandle.TryOpenExisting(ActivateName, out EventWaitHandle? existing)) { existing.Set(); existing.Dispose(); }
-            singleInstance.Dispose();
+            singleInstance?.Dispose();
             singleInstance = null;
             Shutdown();
             return;
         }
         activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateName);
         ThreadPool.RegisterWaitForSingleObject(activateSignal, (_, _) => Dispatcher.BeginInvoke(ShowMainWindow), null, -1, false);
-        AutoStart.RefreshPath();
 
         service = new MouseService(new DispatcherSynchronizationContext(Dispatcher));
+        bool asAdmin = service.Settings.RunAsAdmin;
+        Task.Run(() => AutoStart.RefreshPath(asAdmin));
         window = new MainWindow(service);
         MainWindow = window;
         tray = new TrayIcon { MenuItems = TrayMenu };
@@ -137,6 +155,14 @@ public partial class App : Application
         tray = null;
         window?.Close();
         Shutdown();
+    }
+
+    /// <summary>Hands over to a copy running as administrator; false when Windows' prompt was declined.</summary>
+    public bool RestartElevated()
+    {
+        if (!Elevation.TryStartElevated(["--after", Environment.ProcessId.ToString()])) return false;
+        Quit();
+        return true;
     }
 
     protected override void OnExit(ExitEventArgs e)

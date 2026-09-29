@@ -95,6 +95,8 @@ public sealed class Settings
     /// <summary>Closing the window keeps BetterGhub running in the notification area.</summary>
     public bool CloseToTray { get; set; } = true;
     public bool TrayHintShown { get; set; }
+    /// <summary>Start elevated so macros and buttons also reach apps and games that run as administrator.</summary>
+    public bool RunAsAdmin { get; set; }
 
     [JsonIgnore] public string? LoadError { get; private set; }
 
@@ -125,6 +127,13 @@ public sealed class Settings
         }
         settings.Normalize();
         return settings;
+    }
+
+    /// <summary>Just the <see cref="RunAsAdmin"/> choice, read before anything else starts; false when unreadable.</summary>
+    public static bool PeekRunAsAdmin()
+    {
+        try { return File.Exists(FilePath) && Read(FilePath).RunAsAdmin; }
+        catch (Exception) { return false; }
     }
 
     private static Settings Read(string path) =>

@@ -256,10 +256,42 @@ internal sealed class DevicePage : UserControl, IPage
         };
         startup.Click += (_, _) =>
         {
-            try { AutoStart.Set(startup.IsChecked == true); }
+            try { AutoStart.Set(startup.IsChecked == true, service.Settings.RunAsAdmin); }
             catch (Exception error) { service.Write("Could not change startup: " + error.Message); startup.IsChecked = AutoStart.IsEnabled; }
         };
         appCard.Children.Add(startup);
+
+        CheckBox admin = new()
+        {
+            Style = Ui.Style("Switch"), IsChecked = service.Settings.RunAsAdmin, Margin = new Thickness(0, 12, 0, 0),
+            Content = new StackPanel
+            {
+                Children =
+                {
+                    Ui.Text("Run as administrator", color: "Text"),
+                    Ui.Text(service.Settings.RunAsAdmin && !Elevation.IsElevated
+                        ? "Not running as administrator right now: Windows' prompt was declined."
+                        : "Lets macros and buttons reach games and apps that run as administrator.", "Body", size: 12).With(new Thickness(0, 3, 0, 0))
+                }
+            }
+        };
+        admin.Click += (_, _) =>
+        {
+            bool enabled = admin.IsChecked == true;
+            service.Settings.RunAsAdmin = enabled;
+            service.Save(undoable: false);
+            try { if (AutoStart.IsEnabled) AutoStart.Set(true, enabled); }
+            catch (Exception error) { service.Write("Could not change startup: " + error.Message); }
+            if (enabled && !Elevation.IsElevated && !App.Current.RestartElevated())
+            {
+                service.Settings.RunAsAdmin = false;
+                service.Save(undoable: false);
+                admin.IsChecked = false;
+                service.Write("Not running as administrator: Windows' prompt was declined.");
+            }
+            else if (!enabled && Elevation.IsElevated) service.Write("BetterGhub stops running as administrator the next time it starts.");
+        };
+        appCard.Children.Add(admin);
 
         CheckBox tray = new()
         {
