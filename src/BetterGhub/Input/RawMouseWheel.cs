@@ -30,7 +30,9 @@ internal sealed class RawMouseWheel
         {
             if (GetRawInputData(input, 0x10000003, buffer, ref size, headerSize) == uint.MaxValue) return 0;
             RawInputHeader header = Marshal.PtrToStructure<RawInputHeader>(buffer);
-            if (header.Type != 0 || !DeviceName(header.Device).Contains("VID_046D&PID_C547", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (header.Type != 0) return 0;
+            string name = DeviceName(header.Device);
+            if (!new[] { "VID_046D&PID_C547", "VID_046D&PID_C53F", "VID_046D&PID_C539" }.Any(id => name.Contains(id, StringComparison.OrdinalIgnoreCase))) return 0;
             nint data = buffer + (int)headerSize;
             ushort flags = unchecked((ushort)Marshal.ReadInt16(data, 4));
             short amount = Marshal.ReadInt16(data, 6);

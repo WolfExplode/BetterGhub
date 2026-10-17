@@ -325,9 +325,9 @@ internal sealed class DevicePage : UserControl, IPage
             panel.Children.Add(row);
             return text;
         }
-        Line("Mouse", "G502 X LIGHTSPEED");
+        Line("Mouse", Device.HidppBridge.MouseName);
         mouseFirmware = Line("Mouse firmware", "");
-        Line("Receiver", "LIGHTSPEED 046D:C547, slot 1");
+        Line("Receiver", "LIGHTSPEED, slot 1");
         receiverFirmware = Line("Receiver firmware", "");
         Line("Protocol", "HID++ 2.0 · 0x8100 host mode, 0x8110 button spy, 0x2201 DPI, 0x8060 report rate, 0x1004 battery");
         Line("Settings", Settings.FilePath);

@@ -36,6 +36,9 @@ public partial class App : Application
             return;
         }
 
+        // --g304 renders the G304 layout without the receiver (with --snapshot).
+        Device.HidppBridge.Detect(args.Contains("--g304"));
+
         // --snapshot <folder>: render every page to PNG and exit (design review without the device).
         int snapshot = Array.IndexOf(args, "--snapshot");
         if (snapshot >= 0 && snapshot + 1 < args.Length)

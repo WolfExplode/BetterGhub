@@ -28,9 +28,14 @@ public sealed record OnboardBinding(int Index, string Description, string Raw);
 /// <remarks>
 /// <see cref="SpareSectors"/> holds every other user sector (where macros live), read in full, or all 0xFF when
 /// its first 16 bytes were erased.
+/// <see cref="Blank"/>: the user sectors were never written (a G304 fresh from the box refuses to read them). The
+/// directory is then all 0xFF and slot 1 holds a copy of the factory profile, which the first save writes out.
 /// </remarks>
-public sealed record OnboardMemory(IReadOnlyList<OnboardSlot> Slots, byte[] Directory, int SectorSize, int ButtonCount, IReadOnlyDictionary<int, byte[]> SpareSectors)
+public sealed record OnboardMemory(IReadOnlyList<OnboardSlot> Slots, byte[] Directory, int SectorSize, int ButtonCount, IReadOnlyDictionary<int, byte[]> SpareSectors, bool Blank = false)
 {
+    /// <summary>What the mouse holds in a slot's sector: its profile, or erased flash while the memory is blank.</summary>
+    public byte[] StoredSector(OnboardSlot slot) => Blank ? OnboardProfiles.Erased(SectorSize) : slot.Profile!.Sector;
+
     /// <summary>A user sector's contents as last read: the directory, a slot, or a spare sector.</summary>
     public byte[]? SectorData(int sector) =>
         sector == 0 ? Directory : Slots.FirstOrDefault(s => s.Sector == sector)?.Profile?.Sector ?? SpareSectors.GetValueOrDefault(sector);
@@ -91,6 +96,29 @@ public static class OnboardProfiles
         return WithChecksum(sector);
     }
 
+    public static byte[] Erased(int size)
+    {
+        byte[] data = new byte[size];
+        Array.Fill(data, (byte)0xFF);
+        return data;
+    }
+
+    /// <summary>A directory listing <paramref name="slots"/> (sector, enabled), as G HUB writes it, with a checksum.</summary>
+    public static byte[] NewDirectory(int size, IEnumerable<(int Sector, bool Enabled)> slots)
+    {
+        byte[] directory = Erased(size);
+        int offset = 0;
+        foreach ((int sector, bool enabled) in slots)
+        {
+            directory[offset] = (byte)(sector >> 8);
+            directory[offset + 1] = (byte)sector;
+            directory[offset + 2] = (byte)(enabled ? 1 : 0);
+            directory[offset + 3] = 0;
+            offset += 4;
+        }
+        return WithChecksum(directory);
+    }
+
     /// <summary>The directory with one slot's enabled flag changed, and a fresh checksum.</summary>
     public static byte[] SetEnabled(byte[] directory, int sector, bool enabled)
     {
@@ -122,7 +150,7 @@ public static class OnboardProfiles
     }
 
     /// <summary>Binding index for a BetterGhub control id; the scroll wheel is left out since its slots are only inferred.</summary>
-    public static int? IndexFor(string controlId) => controlId switch
+    public static int? IndexFor(string controlId) => MouseControls.G304 ? G304IndexFor(controlId) : controlId switch
     {
         "G1" => 0,
         "G2" => 1,
@@ -135,6 +163,18 @@ public static class OnboardProfiles
         "G9" => 8,
         "G8" => 9,
         "G7" => 10,
+        _ => null
+    };
+
+    /// <summary>The G304's factory profile order: left, right, middle, back, forward, DPI.</summary>
+    private static int? G304IndexFor(string controlId) => controlId switch
+    {
+        "G1" => 0,
+        "G2" => 1,
+        "G3" => 2,
+        "G4" => 3,
+        "G5" => 4,
+        "G6" => 5,
         _ => null
     };
 
@@ -426,7 +466,7 @@ public static class OnboardProfiles
     /// Which control a binding slot belongs to on the G502 X, from the order of G HUB's factory profile
     /// (left, right, middle, back, DPI Shift, forward, tilts, G9, G8, G7). 12 and 13 are inferred as the scroll wheel.
     /// </summary>
-    public static string ControlName(int index) => index switch
+    public static string ControlName(int index) => MouseControls.G304 ? MouseControls.All.FirstOrDefault(c => IndexFor(c.Id) == index)?.Label ?? $"Button {index + 1}" : index switch
     {
         0 => "Primary click",
         1 => "Secondary click",

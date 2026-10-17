@@ -97,6 +97,10 @@ public sealed class Settings
     public bool TrayHintShown { get; set; }
     /// <summary>Start elevated so macros and buttons also reach apps and games that run as administrator.</summary>
     public bool RunAsAdmin { get; set; }
+    /// <summary>The main window opens maximized, as it was last left; otherwise at its last normal size.</summary>
+    public bool WindowMaximized { get; set; } = true;
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
 
     [JsonIgnore] public string? LoadError { get; private set; }
 

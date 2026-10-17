@@ -204,7 +204,9 @@ internal sealed class OnboardCard : ContentControl
         state.VerticalAlignment = VerticalAlignment.Center;
         head.Children.Add(Ui.Row(12, title, state));
         panel.Children.Add(head);
-        if (!profile.ChecksumOk)
+        if (service.Onboard is { Blank: true })
+            panel.Children.Add(Notice("Nothing has been saved to this mouse yet, so this is its factory profile. Running or editing the slot writes it to the mouse's memory.", "Warning"));
+        else if (!profile.ChecksumOk)
             panel.Children.Add(Notice("The checksum doesn't match, so the mouse uses its factory profile instead of this slot.", "Warning"));
 
         WrapPanel facts = new() { Margin = new Thickness(0, 16, 0, 0) };

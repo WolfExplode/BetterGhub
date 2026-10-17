@@ -18,6 +18,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private readonly Border calibrationBanner = new();
     private readonly DockPanel toolbar = new() { LastChildFill = false };
     private readonly RadioButton topView = new() { Content = "TOP", GroupName = "View" };
+    private Border views = null!;
     private readonly RadioButton sideView = new() { Content = "SIDE", GroupName = "View" };
     private MouseControl selected = MouseControls.ById("G1")!;
     private string tab = "Commands";
@@ -80,7 +81,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         topView.IsChecked = true;
         topView.Checked += (_, _) => SetView(MouseView.Top);
         sideView.Checked += (_, _) => SetView(MouseView.Side);
-        Border views = new() { Style = Ui.Style("SegmentHost"), HorizontalAlignment = HorizontalAlignment.Center, Child = Ui.Row(2, topView, sideView) };
+        views = new() { Style = Ui.Style("SegmentHost"), HorizontalAlignment = HorizontalAlignment.Center, Child = Ui.Row(2, topView, sideView), Visibility = MouseControls.HasSideView ? Visibility.Visible : Visibility.Collapsed };
 
         // Layer switch under the view toggle, like G HUB: DEFAULT ◯— G-SHIFT
         TextBlock defaultLabel = Ui.Text("DEFAULT", size: 12.5, bold: true);
@@ -114,6 +115,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
     public void Refresh()
     {
+        // The mouse layout may have changed (another receiver): drop controls and views it doesn't have.
+        views.Visibility = MouseControls.HasSideView ? Visibility.Visible : Visibility.Collapsed;
+        if (!MouseControls.HasSideView && diagram.View == MouseView.Side) { diagram.View = MouseView.Top; topView.IsChecked = true; }
+        if (MouseControls.ById(selected.Id) is not { } same || same.View != diagram.View) selected = MouseControls.All.First(c => c.View == diagram.View);
+        else selected = same;
+        diagram.Selected = selected;
         diagram.CalibrationMode = calibrating;
         diagram.Rebuild();
         RenderToolbar();

@@ -295,6 +295,14 @@ internal sealed class MouseService : IDisposable
 
     private void HandleEventCore(DeviceEvent item)
     {
+        // The receiver can differ from the one found at startup (plugged in later, or swapped): follow its layout.
+        bool g304 = Device.HidppBridge.MouseName.StartsWith("G304", StringComparison.Ordinal);
+        if (item is ModeEvent && g304 != MouseControls.G304)
+        {
+            MouseControls.G304 = g304;
+            Write($"{Device.HidppBridge.MouseName} found; switched to its button layout");
+            SettingsChanged?.Invoke();
+        }
         switch (item)
         {
             case ConnectedEvent connected:
@@ -766,8 +774,14 @@ internal sealed class MouseService : IDisposable
         OnboardProfile profile = slot.Profile ?? throw new InvalidOperationException("This slot could not be read");
         List<SectorWrite> writes = [];
         edit = PlaceMacros(memory, slot, edit, writes);
-        writes.Add(new(slot.Sector, profile.Sector, OnboardProfiles.Build(profile.Sector, edit)));
-        if (edit.Enabled != slot.Enabled)
+        writes.Add(new(slot.Sector, memory.StoredSector(slot), OnboardProfiles.Build(profile.Sector, edit)));
+        if (memory.Blank)
+        {
+            // First save to a mouse that was never written: the directory goes after the slot it points at.
+            if (!edit.Enabled) throw new InvalidOperationException("Keep at least one slot enabled");
+            writes.Add(new(0, memory.Directory, OnboardProfiles.NewDirectory(memory.SectorSize, [(slot.Sector, true)])));
+        }
+        else if (edit.Enabled != slot.Enabled)
         {
             if (!edit.Enabled && memory.Slots.Count(s => s.Enabled) <= 1) throw new InvalidOperationException("Keep at least one slot enabled");
             writes.Add(new(0, memory.Directory, OnboardProfiles.SetEnabled(memory.Directory, slot.Sector, edit.Enabled)));
@@ -830,6 +844,7 @@ internal sealed class MouseService : IDisposable
         if (State != ConnectionState.Connected) throw new InvalidOperationException("Connect the mouse first");
         if (!slot.Enabled) throw new InvalidOperationException("Enable this slot first");
         FlushOnboard();
+        if (Onboard is { Blank: true } && !OnboardBusy) SaveOnboardSlot(slot, EditFor(slot)); // Nothing to run until it's written; the mode switch queues after it.
         bridge.SetMode(slot.Sector);
     }
 
@@ -960,14 +975,14 @@ internal sealed class MouseService : IDisposable
         Directory.CreateDirectory(OnboardBackupFolder);
         Dictionary<string, string> sectors = new() { ["0"] = Convert.ToHexString(memory.Directory) };
         foreach (OnboardSlot slot in memory.Slots)
-            if (slot.Profile is { } profile) sectors[slot.Sector.ToString()] = Convert.ToHexString(profile.Sector);
+            if (slot.Profile is { } profile && !memory.Blank) sectors[slot.Sector.ToString()] = Convert.ToHexString(profile.Sector);
         foreach ((int sector, byte[] data) in memory.SpareSectors) // Macros; erased sectors are left out.
             if (data.Any(b => b != 0xFF)) sectors[sector.ToString()] = Convert.ToHexString(data);
         string path = Path.Combine(OnboardBackupFolder, $"onboard-{DateTime.Now:yyyyMMdd-HHmmss}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(new
         {
             created = DateTime.Now,
-            mouse = "G502 X LIGHTSPEED",
+            mouse = Device.HidppBridge.MouseName,
             firmware = MouseFirmware,
             sectorSize = memory.SectorSize,
             sectors

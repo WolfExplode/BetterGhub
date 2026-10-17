@@ -31,12 +31,15 @@ public partial class MainWindow : Window
     {
         this.service = service;
         InitializeComponent();
+        MouseTitle.Text = Device.HidppBridge.MouseName;
+        RestorePlacement();
         service.StateChanged += UpdateChrome;
+        service.StateChanged += () => MouseTitle.Text = Device.HidppBridge.MouseName;
         service.SettingsChanged += () => (PageHost.Content as IPage)?.Refresh();
         service.Calibrated += (control, bit) => ShowToast($"{control.Label} calibrated · 0x{bit:x4}");
         service.Notice += ShowToast;
         service.EditSource = () => System.Windows.Input.Keyboard.FocusedElement as TextBoxBase;
-        StateChanged += (_, _) => UpdateMaximized();
+        StateChanged += (_, _) => { UpdateMaximized(); SavePlacement(); };
         SizeChanged += (_, _) => UpdateCompact();
         SourceInitialized += (_, _) => AttachInput();
         Loaded += (_, _) => { if (service.Settings.LoadError is { } error) ShowToast(error); };
@@ -444,6 +447,34 @@ public partial class MainWindow : Window
 
     private void CompactStatusClick(object sender, RoutedEventArgs e) => Navigate("Settings");
 
+    /// <summary>Opens at the size and state the window was last left in (maximized the first time), kept on screen.</summary>
+    private void RestorePlacement()
+    {
+        Settings settings = service.Settings;
+        Rect area = SystemParameters.WorkArea;
+        if (settings.WindowWidth is double width && settings.WindowHeight is double height)
+        {
+            Width = Math.Clamp(width, MinWidth, Math.Max(MinWidth, area.Width));
+            Height = Math.Clamp(height, MinHeight, Math.Max(MinHeight, area.Height));
+        }
+        if (settings.WindowMaximized) WindowState = WindowState.Maximized;
+        UpdateMaximized();
+    }
+
+    private void SavePlacement()
+    {
+        if (WindowState == WindowState.Minimized) return;
+        Settings settings = service.Settings;
+        Rect normal = WindowState == WindowState.Maximized ? RestoreBounds : new Rect(Left, Top, ActualWidth, ActualHeight);
+        bool maximized = WindowState == WindowState.Maximized;
+        double? width = normal.IsEmpty ? settings.WindowWidth : normal.Width, height = normal.IsEmpty ? settings.WindowHeight : normal.Height;
+        if (settings.WindowMaximized == maximized && settings.WindowWidth == width && settings.WindowHeight == height) return;
+        settings.WindowMaximized = maximized;
+        settings.WindowWidth = width;
+        settings.WindowHeight = height;
+        try { settings.Save(); } catch (Exception error) { service.Write("Could not save settings: " + error.Message); }
+    }
+
     private void UpdateMaximized()
     {
         // A chromeless maximized window overhangs the screen by the resize border.
@@ -457,7 +488,7 @@ public partial class MainWindow : Window
     internal void ShowFromTray()
     {
         Show();
-        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        if (WindowState == WindowState.Minimized) WindowState = service.Settings.WindowMaximized ? WindowState.Maximized : WindowState.Normal;
         Activate();
         Topmost = true; // Reliably bring to front when activated from another process or the tray.
         Topmost = false;
@@ -466,6 +497,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        SavePlacement();
         if (!App.Current.Quitting && service.Settings.CloseToTray)
         {
             e.Cancel = true;

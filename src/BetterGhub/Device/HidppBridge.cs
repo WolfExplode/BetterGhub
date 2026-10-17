@@ -14,8 +14,26 @@ namespace BetterGhub.Device;
 /// </summary>
 internal sealed class HidppBridge : IDisposable
 {
-    private const ushort VendorId = 0x046D, ProductId = 0xC547;
+    private const ushort VendorId = 0x046D;
     private const byte Slot = 1, ReceiverIndex = 0xFF, SoftwareId = 0x0D;
+
+    /// <summary>Known LIGHTSPEED receivers: 0xC547 (G502 X), 0xC53F and 0xC539 (G304 / G305).</summary>
+    private static readonly (ushort ProductId, string Mouse)[] Receivers = [(0xC547, "G502 X LIGHTSPEED"), (0xC53F, "G304 LIGHTSPEED"), (0xC539, "G304 LIGHTSPEED")];
+
+    /// <summary>The mouse behind the receiver found by the last <see cref="Session.Open"/>, for display.</summary>
+    public static string MouseName { get; private set; } = Receivers[0].Mouse;
+
+    /// <summary>Picks the mouse layout from the receiver plugged in at startup; the G502 X when none is found.</summary>
+    public static void Detect(bool forceG304 = false)
+    {
+        (ushort productId, string mouse) = FindReceiver();
+        if (forceG304) (productId, mouse) = Receivers[1];
+        if (productId != 0) MouseName = mouse;
+        MouseControls.G304 = productId is 0xC53F or 0xC539;
+    }
+
+    private static (ushort ProductId, string Mouse) FindReceiver() =>
+        Receivers.FirstOrDefault(r => HidDevice.Enumerate(VendorId, r.ProductId).Any(x => x.UsagePage == 0xFF00));
 
     private readonly ConcurrentQueue<(string Command, int Value, object? Data)> commands = new();
     private Thread? worker;
@@ -106,7 +124,8 @@ internal sealed class HidppBridge : IDisposable
         byte spyIndex = session.Call(0, 0, 0x81, 0x10, 0)[0];
         byte dpiIndex = session.Call(0, 0, 0x22, 0x01, 0)[0];
         byte rateIndex = session.Call(0, 0, 0x80, 0x60, 0)[0];
-        if (modeIndex == 0 || spyIndex == 0) throw new IOException("This mouse does not support host mode or button reporting");
+        if (modeIndex == 0 || spyIndex == 0)
+            throw new IOException($"{MouseName} was detected, but it doesn't report on-board profiles (0x8100: {modeIndex}) or button spying (0x8110: {spyIndex}). Run BetterGhub.exe --probe probe.txt and share the file.");
 
         ApplyMode(session, modeIndex, spyIndex);
         int dpi = 0, interval = 0;
@@ -266,7 +285,9 @@ internal sealed class HidppBridge : IDisposable
             if (description[1] != 3 || sectorSize < 64) return null; // Unknown profile format.
             List<OnboardSlot> slots = [];
             int number = 1;
-            byte[] directory = ReadSector(session, modeIndex, 0, sectorSize);
+            byte[] directory;
+            try { directory = ReadSector(session, modeIndex, 0, sectorSize); }
+            catch (HidppErrorException) { return ReadBlank(session, modeIndex, buttonCount, sectorCount, sectorSize); }
             foreach ((int sector, bool enabled) in OnboardProfiles.ParseDirectory(directory, profileCount))
             {
                 OnboardProfile? profile = null;
@@ -297,6 +318,29 @@ internal sealed class HidppBridge : IDisposable
     }
 
     /// <summary>
+    /// User memory that was never written (the mouse refuses to read the directory): slot 1 starts as a copy of
+    /// the first factory profile, listed in the factory directory (sector 0x0100), and every other user sector is
+    /// taken as erased. Null when there's no factory profile to start from either.
+    /// </summary>
+    private static OnboardMemory? ReadBlank(Session session, byte modeIndex, int buttonCount, int sectorCount, int sectorSize)
+    {
+        byte[] factoryDirectory = ReadSector(session, modeIndex, 0x100, sectorSize);
+        if (OnboardProfiles.ParseDirectory(factoryDirectory, 1) is not [(int factory, _)] || factory < 0x100) return null;
+        byte[] template = OnboardProfiles.WithChecksum(ReadSector(session, modeIndex, factory, sectorSize));
+        OnboardSlot slot = new(1, 1, true, OnboardProfiles.Parse(template, buttonCount));
+        Dictionary<int, byte[]> spare = [];
+        for (int sector = 2; sector < sectorCount; sector++) spare[sector] = OnboardProfiles.Erased(sectorSize);
+        return new OnboardMemory([slot], OnboardProfiles.Erased(sectorSize), sectorSize, buttonCount, spare, Blank: true);
+    }
+
+    /// <summary>A user sector, or erased flash when the mouse refuses to read it because it was never written.</summary>
+    private static byte[] ReadOrErased(Session session, byte modeIndex, int sector, int size)
+    {
+        try { return ReadSector(session, modeIndex, sector, size); }
+        catch (HidppErrorException) when (sector < 0x100) { return OnboardProfiles.Erased(size); }
+    }
+
+    /// <summary>
     /// Writes each sector with memoryAddrWrite (sector, offset 0, length), 16-byte memoryWrite calls and
     /// memoryWriteEnd, then reads it back. Refuses anything but the directory and user profile sectors,
     /// and any sector that changed since the app read it (e.g. G HUB saved in the meantime).
@@ -311,7 +355,7 @@ internal sealed class HidppBridge : IDisposable
             if (write.Data.Length != sectorSize || write.Expected.Length != sectorSize) return new OnboardWriteEvent(false, "Sector size doesn't match the mouse");
         }
         foreach (SectorWrite write in sectors)
-            if (!ReadSector(session, modeIndex, write.Sector, sectorSize).AsSpan().SequenceEqual(write.Expected))
+            if (!ReadOrErased(session, modeIndex, write.Sector, sectorSize).AsSpan().SequenceEqual(write.Expected))
                 return new OnboardWriteEvent(false, "The mouse's memory changed since BetterGhub read it. Nothing was written; check the slots and try again.");
         int written = 0;
         foreach (SectorWrite write in sectors)
@@ -355,7 +399,7 @@ internal sealed class HidppBridge : IDisposable
         text.AppendLine($"  memory model {description[0]}, profile format {description[1]}, macro format {description[2]}, profiles {description[3]}, "
             + $"factory profiles {factoryCount}, buttons {description[5]}, sectors {sectorCount}, sector size {sectorSize}");
         text.AppendLine();
-        IEnumerable<int> sectors = Enumerable.Range(0, sectorCount).Concat(Enumerable.Range(0x100, Math.Max(factoryCount, 1)));
+        IEnumerable<int> sectors = Enumerable.Range(0, sectorCount).Concat(Enumerable.Range(0x100, factoryCount + 1)); // 0x0100 is the factory directory, its profiles follow.
         List<string> skipped = [];
         foreach (int sector in sectors)
         {
@@ -459,10 +503,13 @@ internal sealed class HidppBridge : IDisposable
     {
         StringBuilder text = new();
         text.AppendLine($"BetterGhub probe {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        List<HidDevice.Info> interfaces = HidDevice.Enumerate(VendorId, ProductId);
-        text.AppendLine($"{interfaces.Count} HID interface(s) for {VendorId:x4}:{ProductId:x4}");
-        foreach (HidDevice.Info item in interfaces)
-            text.AppendLine($"  usage page 0x{item.UsagePage:x4} usage 0x{item.Usage:x2}  {item.Path}");
+        foreach ((ushort productId, string mouse) in Receivers)
+        {
+            List<HidDevice.Info> interfaces = HidDevice.Enumerate(VendorId, productId);
+            text.AppendLine($"{interfaces.Count} HID interface(s) for {VendorId:x4}:{productId:x4} ({mouse})");
+            foreach (HidDevice.Info item in interfaces)
+                text.AppendLine($"  usage page 0x{item.UsagePage:x4} usage 0x{item.Usage:x2}  {item.Path}");
+        }
         try
         {
             using Session session = Session.Open();
@@ -488,6 +535,12 @@ internal sealed class HidppBridge : IDisposable
                         text.AppendLine("    G-shift: " + string.Join(", ", profile.ShiftButtons.Select(b => $"{b.Index + 1}={b.Description} [{b.Raw}]")));
                     }
                 }
+            else if (mode != 0)
+            {
+                text.AppendLine("  On-board memory isn't in a format BetterGhub reads; raw dump follows.");
+                try { text.AppendLine(DumpMemory(session, mode)); }
+                catch (HidppErrorException error) { text.AppendLine($"  Dump refused: {error.Message}"); }
+            }
             Battery battery = Battery.Find(session);
             text.AppendLine($"  Battery ({(battery.Unified ? "UnifiedBattery 0x1004" : "BatteryStatus 0x1000")}): feature index {battery.Index}");
             if (battery.Read(session) is { } charge) text.AppendLine($"  Battery: {charge.Percent}%{(charge.Charging ? " charging" : "")}");
@@ -523,7 +576,10 @@ internal sealed class HidppBridge : IDisposable
 
         public static Session Open()
         {
-            List<HidDevice.Info> vendor = HidDevice.Enumerate(VendorId, ProductId).Where(x => x.UsagePage == 0xFF00).ToList();
+            (ushort productId, string mouse) = FindReceiver();
+            if (productId == 0) throw new ReceiverMissingException("No supported receiver found");
+            MouseName = mouse;
+            List<HidDevice.Info> vendor = HidDevice.Enumerate(VendorId, productId).Where(x => x.UsagePage == 0xFF00).ToList();
             HidDevice.Info[] shortMatches = vendor.Where(x => x.Usage == 1).ToArray();
             HidDevice.Info[] longMatches = vendor.Where(x => x.Usage == 2).ToArray();
             if (shortMatches.Length != 1 || longMatches.Length != 1)

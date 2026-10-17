@@ -10,12 +10,12 @@ using BetterGhub.Services;
 
 namespace BetterGhub.Views;
 
-/// <summary>The G502 X artwork with a callout per control, like G HUB's assignment view.</summary>
+/// <summary>The mouse artwork with a callout per control, like G HUB's assignment view.</summary>
 internal sealed class MouseDiagram : Viewbox
 {
     private const double CanvasWidth = 880, CanvasHeight = 700;
     private const double LabelWidth = 200, LeftColumn = 0, RightColumn = CanvasWidth - LabelWidth;
-    private static readonly Dictionary<MouseView, BitmapSource> Artwork = [];
+    private static readonly Dictionary<string, BitmapSource> Artwork = [];
 
     private readonly MouseService service;
     private readonly Canvas canvas = new() { Width = CanvasWidth, Height = CanvasHeight };
@@ -79,8 +79,8 @@ internal sealed class MouseDiagram : Viewbox
     /// <summary>Recolours the white line drawings into a dark, low-glare version for the dark theme.</summary>
     private static BitmapSource DarkArtwork(MouseView view)
     {
-        if (Artwork.TryGetValue(view, out BitmapSource? cached)) return cached;
-        string name = view == MouseView.Top ? "mouse-top.png" : "mouse-side.png";
+        string name = MouseControls.G304 ? "mouse-top-g304.png" : view == MouseView.Top ? "mouse-top.png" : "mouse-side.png";
+        if (Artwork.TryGetValue(name, out BitmapSource? cached)) return cached;
         BitmapImage source = new(new Uri($"pack://application:,,,/Assets/{name}"));
         FormatConvertedBitmap bgra = new(source, PixelFormats.Bgra32, null, 0);
         int stride = bgra.PixelWidth * 4;
@@ -99,7 +99,7 @@ internal sealed class MouseDiagram : Viewbox
         }
         BitmapSource result = BitmapSource.Create(bgra.PixelWidth, bgra.PixelHeight, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
         result.Freeze();
-        return Artwork[view] = result;
+        return Artwork[name] = result;
     }
 
     public void SetPressed(int bit, bool down)
