@@ -43,9 +43,6 @@ internal sealed class DevicePage : UserControl, IPage
         logHead.Children.Add(Ui.Text("Live input", "H2"));
         DockPanel.SetDock(logHead, Dock.Top);
         right.Children.Add(logHead);
-        TextBlock help = Ui.Text("Every control lights up while pressed. The log shows each HID bit, which is handy when a button seems to do nothing.", "Body", size: 12);
-        DockPanel.SetDock(help, Dock.Top);
-        right.Children.Add(help);
         DockPanel.SetDock(lamps, Dock.Top);
         lamps.Margin = new Thickness(0, 14, 0, 14);
         right.Children.Add(lamps);
@@ -94,6 +91,17 @@ internal sealed class DevicePage : UserControl, IPage
         };
         Refresh();
     }
+
+    public (string Title, string Text)[] Tips =>
+    [
+        ("Button test", "Every control lights up while pressed. The log shows each HID bit, which is handy when a button seems to do nothing."),
+        ("Host mode", "Connecting switches the mouse to host mode in its working memory only. Quit BetterGhub and power-cycle the mouse to return to its onboard profile."),
+        ("Battery estimate", "Estimated like G HUB, from typical power draw. Lower report rates last longer."),
+        ("Run as administrator", "Lets macros and buttons reach games and apps that run as administrator."),
+        ("Closing the window", "Macros only work while BetterGhub runs. With \"Keep running\" on, quit from the tray icon."),
+        ("Portable", "Nothing is installed. If you move the exe, start it once from the new place and autostart follows."),
+        ("Export and import", "Export saves profiles, macros, assignments and calibration to a file. Import replaces all of them."),
+    ];
 
     public void Refresh()
     {
@@ -173,7 +181,6 @@ internal sealed class DevicePage : UserControl, IPage
         Line("System", $"{PowerModel.SystemMilliwatts:0} mW");
         Line("Report rate", $"{PowerModel.ReportRateMilliwatts(interval):0} mW at {1000 / interval} Hz");
         Line("Max charge", $"Approx {PowerModel.MaxHours(interval):0} hours");
-        battery.Children.Add(Ui.Text("Estimated like G HUB, from typical power draw. Lower report rates last longer.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 6, 0, 0)));
     }
 
     private void RenderFirmware()
@@ -241,7 +248,6 @@ internal sealed class DevicePage : UserControl, IPage
         };
         auto.Click += (_, _) => { service.Settings.AutoConnect = auto.IsChecked == true; service.Save(); };
         connection.Children.Add(auto);
-        connection.Children.Add(Ui.Text("Connecting switches the mouse to host mode in its working memory only. Quit BetterGhub and power-cycle the mouse to return to its onboard profile.", "Body", size: 11.5, color: "Faint").With(new Thickness(0, 14, 0, 0)));
     }
 
     private void RenderApp()
@@ -266,15 +272,11 @@ internal sealed class DevicePage : UserControl, IPage
             Style = Ui.Style("Switch"), IsChecked = service.Settings.RunAsAdmin, Margin = new Thickness(0, 12, 0, 0),
             Content = new StackPanel
             {
-                Children =
-                {
-                    Ui.Text("Run as administrator", color: "Text"),
-                    Ui.Text(service.Settings.RunAsAdmin && !Elevation.IsElevated
-                        ? "Not running as administrator right now: Windows' prompt was declined."
-                        : "Lets macros and buttons reach games and apps that run as administrator.", "Body", size: 12).With(new Thickness(0, 3, 0, 0))
-                }
+                Children = { Ui.Text("Run as administrator", color: "Text") }
             }
         };
+        if (service.Settings.RunAsAdmin && !Elevation.IsElevated)
+            ((StackPanel)admin.Content).Children.Add(Ui.Text("Not running as administrator right now: Windows' prompt was declined.", "Body", size: 12).With(new Thickness(0, 3, 0, 0)));
         admin.Click += (_, _) =>
         {
             bool enabled = admin.IsChecked == true;
@@ -296,18 +298,11 @@ internal sealed class DevicePage : UserControl, IPage
         CheckBox tray = new()
         {
             Style = Ui.Style("Switch"), IsChecked = service.Settings.CloseToTray, Margin = new Thickness(0, 12, 0, 0),
-            Content = new StackPanel
-            {
-                Children =
-                {
-                    Ui.Text("Keep running when the window is closed", color: "Text"),
-                    Ui.Text("Macros only work while BetterGhub runs. Quit from the tray icon.", "Body", size: 12).With(new Thickness(0, 3, 0, 0))
-                }
-            }
+            Content = Ui.Text("Keep running when the window is closed", color: "Text")
         };
         tray.Click += (_, _) => { service.Settings.CloseToTray = tray.IsChecked == true; service.Save(); };
         appCard.Children.Add(tray);
-        appCard.Children.Add(Ui.Text($"Version {AutoStart.Version} · portable, nothing is installed. If you move the exe, start it once from the new place and autostart follows.", "Body", size: 12).With(new Thickness(0, 18, 0, 0)));
+        appCard.Children.Add(Ui.Text($"Version {AutoStart.Version}", "Body", size: 12).With(new Thickness(0, 18, 0, 0)));
     }
 
     private FrameworkElement About()
@@ -339,7 +334,6 @@ internal sealed class DevicePage : UserControl, IPage
         open.HorizontalAlignment = HorizontalAlignment.Left;
         panel.Children.Add(open.With(new Thickness(0, 6, 0, 0)));
         panel.Children.Add(Ui.Row(8, Ui.Button("Export settings…", ExportSettings, "Btn", ""), Ui.Button("Import settings…", ImportSettings, "Btn", "")).With(new Thickness(0, 10, 0, 0)));
-        panel.Children.Add(Ui.Text("Export saves profiles, macros, assignments and calibration to a file. Import replaces all of them.", "Body", size: 12).With(new Thickness(0, 8, 0, 0)));
         return panel;
     }
 

@@ -83,6 +83,14 @@ internal sealed class MacrosPage : UserControl, IPage
         e.Handled = true;
     }
 
+    public (string Title, string Text)[] Tips =>
+    [
+        ("Editing actions", "Click an action to edit it, or drag it to move it. New actions are added after the selected one. Press Delete to remove the selected action."),
+        ("Selecting several", "Shift-click another action to select the range between them, or click one to select just it."),
+        ("Assigning", "Assign a macro to any button on the Assignments page by dragging it onto a button, or right-click it in the list."),
+        ("Delays", "Delays can be random within a range, and a standard delay overrides the recorded ones."),
+    ];
+
     public void Refresh()
     {
         // By id, since undo puts back copies of the macros.
@@ -414,7 +422,6 @@ internal sealed class MacrosPage : UserControl, IPage
         Canvas overlay = new() { IsHitTestVisible = false, Children = { dropMarker } };
         lane.Child = new Grid { Children = { timeline, overlay } };
         editor.Children.Add(lane);
-        editor.Children.Add(Ui.Text("Click an action to edit it, or drag it to move it. New actions are added after the selected one.", "Body", size: 12).With(new Thickness(2, 8, 0, 0)));
 
         inspector = new StackPanel { Margin = new Thickness(0, 18, 0, 0) };
         editor.Children.Add(inspector);
@@ -599,7 +606,6 @@ internal sealed class MacrosPage : UserControl, IPage
             multi.Children.Add(actions);
             StackPanel summary = new();
             summary.Children.Add(Ui.Text($"ACTIONS {first + 1}–{last + 1} OF {macro.Steps.Count} · {last - first + 1} SELECTED", "Overline").With(new Thickness(0, 8, 0, 0)));
-            summary.Children.Add(Ui.Text("Shift-click another action to change the range, or click one to select just it.", "Body", size: 12).With(new Thickness(0, 6, 0, 0)));
             multi.Children.Add(summary);
             inspector.Children.Add(new Border { Background = Ui.Brush("Surface"), CornerRadius = new CornerRadius(12), Padding = new Thickness(18, 16, 18, 16), Child = multi });
             return;

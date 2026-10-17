@@ -26,10 +26,6 @@ internal sealed class SensitivityPage : UserControl, IPage
         TextBlock heading = Ui.Text("DPI SPEEDS", "H2");
         heading.HorizontalAlignment = HorizontalAlignment.Center;
         main.Children.Add(heading);
-        TextBlock hint = Ui.Text("Drag a dot to change a speed · click a number to make it current · drag the diamond to set DPI Shift", "Body", size: 12);
-        hint.HorizontalAlignment = HorizontalAlignment.Center;
-        hint.TextAlignment = TextAlignment.Center;
-        main.Children.Add(hint.With(new Thickness(0, 6, 0, 0)));
         main.Children.Add(track);
         main.Children.Add(stageTools);
         deviceLine.HorizontalAlignment = HorizontalAlignment.Center;
@@ -63,6 +59,14 @@ internal sealed class SensitivityPage : UserControl, IPage
         };
         Refresh();
     }
+
+    public (string Title, string Text)[] Tips =>
+    [
+        ("Changing speeds", "Drag a dot on the track to change a speed, click a number to make it the current speed, or drag the diamond to set the DPI Shift speed. You can also type an exact value."),
+        ("DPI", "How far the pointer moves for each inch of mouse movement. Use the DPI buttons, or assign DPI Up, Down or Cycle to a button, to switch speeds."),
+        ("DPI Shift", "Assign DPI Shift to a button (normally the thumb sniper button, G6) and hold it for precise aiming."),
+        ("Report rate", "Reports per second. 1000 Hz is smoothest; lower rates save battery."),
+    ];
 
     public void Refresh()
     {
@@ -169,7 +173,7 @@ internal sealed class SensitivityPage : UserControl, IPage
         side.Children.Clear();
         MouseProfile profile = service.ActiveProfile;
         side.Children.Add(Ui.Text("Sensitivity", "H2"));
-        side.Children.Add(Ui.Text("DPI is how far the pointer moves for each inch of mouse movement. Use the DPI buttons, or assign DPI Up/Down/Cycle, to switch speeds.", "Body").With(new Thickness(0, 8, 0, 20)));
+        side.Children.Add(new Border { Height = 20 });
 
         side.Children.Add(Ui.Text("DPI SPEEDS", "Overline"));
         WrapPanel speeds = new();
@@ -193,11 +197,11 @@ internal sealed class SensitivityPage : UserControl, IPage
             speeds.Children.Add(number);
         }
         side.Children.Add(speeds);
-        side.Children.Add(Ui.Text("The underlined speed is current. Click a speed to switch to it.", "Body", size: 12).With(new Thickness(0, 2, 0, 18)));
+        side.Children.Add(new Border { Height = 18 });
 
         side.Children.Add(Ui.Text("DPI SHIFT", "Overline"));
         side.Children.Add(Ui.Text($"{profile.ShiftDpi} DPI while held", size: 15, bold: true));
-        side.Children.Add(Ui.Text("Assign DPI Shift to a button (normally the thumb sniper button, G6) and hold it for precise aiming.", "Body", size: 12).With(new Thickness(0, 4, 0, 20)));
+        side.Children.Add(new Border { Height = 20 });
 
         side.Children.Add(Ui.Text("REPORT RATE", "Overline"));
         StackPanel rates = new() { Orientation = Orientation.Horizontal };
@@ -213,7 +217,7 @@ internal sealed class SensitivityPage : UserControl, IPage
             rates.Children.Add(rate);
         }
         side.Children.Add(new Border { Style = Ui.Style("SegmentHost"), Child = rates });
-        side.Children.Add(Ui.Text("Reports per second. 1000 Hz is smoothest; lower rates save battery.", "Body", size: 12).With(new Thickness(0, 8, 0, 22)));
+        side.Children.Add(new Border { Height = 22 });
 
         Button reset = Ui.Button("Restore default speeds", () =>
         {

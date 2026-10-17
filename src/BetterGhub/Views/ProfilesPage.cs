@@ -45,6 +45,15 @@ internal sealed class ProfilesPage : UserControl, IPage
         Refresh();
     }
 
+    public (string Title, string Text)[] Tips =>
+    [
+        ("What a profile keeps", "Each profile keeps its own assignments, DPI speeds and report rate. Macros are shared, so any profile can use them."),
+        ("Application profiles", "Add an application to get a profile that switches on automatically while that app has focus. Use the picker button beside it to choose an app by clicking its window."),
+        ("Desktop profile", "Used whenever no application profile matches the focused window."),
+        ("Copy settings", "Use Copy settings from… to start a profile from another one's assignments and speeds."),
+        ("Use now", "Switches to a profile immediately, regardless of the focused window."),
+    ];
+
     public void Refresh()
     {
         autoSwitch.IsChecked = service.Settings.AutoSwitchProfiles;
@@ -176,7 +185,6 @@ internal sealed class ProfilesPage : UserControl, IPage
         facts.Children.Add(Fact("CURRENT DPI", profile.Dpi.ToString()));
         facts.Children.Add(Fact("REPORT RATE", $"{profile.ReportRate} Hz"));
         body.Children.Add(facts);
-        body.Children.Add(Ui.Text("Each profile keeps its own assignments, DPI speeds and report rate. Macros are shared, so any profile can use them.", "Body", size: 12, color: "Faint").With(new Thickness(0, 12, 0, 0)));
         details.Content = Ui.Card(body, new Thickness(24, 20, 24, 20));
     }
 
