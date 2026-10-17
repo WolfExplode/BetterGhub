@@ -28,7 +28,10 @@ internal sealed class MouseDiagram : Viewbox
     public bool CalibrationMode { get; set; }
     public event Action<MouseControl>? ControlClicked;
     /// <summary>An assignment id was dragged from the picker and dropped on a control.</summary>
-    public event Action<MouseControl, string>? AssignmentDropped;
+    /// <summary>An action was dropped on a control; the flag is true when Ctrl was held, to add it instead of replacing.</summary>
+    public event Action<MouseControl, string, bool>? AssignmentDropped;
+    /// <summary>One action of a control's binding was removed from its right-click menu.</summary>
+    public event Action<MouseControl, string>? ActionRemoved;
     /// <summary>"Reset to default" was chosen from a control's right-click menu.</summary>
     public event Action<MouseControl>? ResetRequested;
     /// <summary>"Activate on press / release" was chosen from a control's right-click menu (true: on release).</summary>
@@ -209,10 +212,10 @@ internal sealed class MouseDiagram : Viewbox
                     target.Drop += (_, e) =>
                     {
                         Highlight(false);
-                        if (e.Data.GetData(DragFormat) is string id) owner.AssignmentDropped?.Invoke(control, id);
+                        if (e.Data.GetData(DragFormat) is string id) owner.AssignmentDropped?.Invoke(control, id, e.KeyStates.HasFlag(DragDropKeyStates.ControlKey));
                         e.Handled = true;
                     };
-                    target.ContextMenu = ResetMenu(assigned is not null);
+                    target.ContextMenu = ResetMenu(assigned);
                 }
             }
             halo.Fill = new SolidColorBrush(Color.FromArgb(70, 0x2E, 0xC5, 0xEA));
@@ -227,16 +230,29 @@ internal sealed class MouseDiagram : Viewbox
             e.Handled = true;
         }
 
-        private ContextMenu ResetMenu(bool assigned)
+        private ContextMenu ResetMenu(string? binding)
         {
             MenuItem reset = new()
             {
                 Header = owner.ShiftLayer ? "Clear G-Shift action" : "Reset to default",
                 Icon = Ui.Glyph("", 12),
-                IsEnabled = assigned
+                IsEnabled = binding is not null
             };
             reset.Click += (_, _) => owner.ResetRequested?.Invoke(control);
-            ContextMenu menu = new() { Items = { reset } };
+            ContextMenu menu = new();
+            // Each action on the button, with a trash can to remove just that one.
+            string[] actions = Assignments.Split(binding);
+            if (actions.Length > 0)
+            {
+                foreach (string action in actions)
+                {
+                    MenuItem item = new() { Header = owner.service.Settings.DescribeAssignment(action), Icon = Ui.Glyph("", 12), ToolTip = "Remove this action" };
+                    item.Click += (_, _) => owner.ActionRemoved?.Invoke(control, action);
+                    menu.Items.Add(item);
+                }
+                menu.Items.Add(new Separator());
+            }
+            menu.Items.Add(reset);
             if (owner.service.Settings.BitFor(control) is int bit && !control.IsWheel && !owner.service.IsOnboard && !owner.ShiftLayer)
             {
                 bool tap = owner.service.TapOnly(bit);

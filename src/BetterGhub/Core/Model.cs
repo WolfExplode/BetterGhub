@@ -219,6 +219,7 @@ public sealed class Settings
 
     public string DescribeAssignment(string? id) =>
         string.IsNullOrEmpty(id) ? ""
+            : id.Contains(Assignments.Separator) ? string.Join(" + ", Assignments.Split(id).Select(DescribeAssignment))
             : Macros.FirstOrDefault(m => m.Id == id)?.Name ?? BuiltinActions.NameFor(id) ?? Assignments.NameFor(id) ?? "Missing macro";
 
     public bool IsMacro(string? id) => id is not null && Macros.Any(m => m.Id == id);

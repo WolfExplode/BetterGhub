@@ -488,8 +488,12 @@ internal sealed class MouseService : IDisposable
     {
         foreach (MouseProfile profile in Settings.Profiles)
         {
-            foreach (int bit in profile.Assignments.Where(x => x.Value == macro.Id).Select(x => x.Key).ToArray()) profile.Assignments.Remove(bit);
-            foreach (int bit in profile.ShiftAssignments.Where(x => x.Value == macro.Id).Select(x => x.Key).ToArray()) profile.ShiftAssignments.Remove(bit);
+            foreach (Dictionary<int, string> layer in new[] { profile.Assignments, profile.ShiftAssignments })
+                foreach (int bit in layer.Where(x => Assignments.Has(x.Value, macro.Id)).Select(x => x.Key).ToArray())
+                {
+                    string? rest = Assignments.Join(Assignments.Split(layer[bit]).Where(a => a != macro.Id));
+                    if (rest is null) layer.Remove(bit); else layer[bit] = rest;
+                }
             foreach (ComboSlot combo in profile.ComboSlots.Where(c => c.Action == macro.Id)) combo.Action = "";
         }
         Settings.Macros.Remove(macro);
@@ -497,15 +501,46 @@ internal sealed class MouseService : IDisposable
     }
 
     /// <summary>Assigns an action; false (with a <see cref="Notice"/>) when the on-board slot can't store it.</summary>
-    public bool Assign(bool shiftLayer, int bit, string? id)
+    public bool Assign(bool shiftLayer, int bit, string? id, bool add = false)
     {
+        Dictionary<int, string> layer = shiftLayer ? ActiveProfile.ShiftAssignments : ActiveProfile.Assignments;
+        if (add && !string.IsNullOrEmpty(id))
+        {
+            // Added alongside what the button already does, which includes its default (e.g. Middle click).
+            MouseControl? control = Settings.ControlFor(bit);
+            string? existing = layer.GetValueOrDefault(bit);
+            if (existing is null && !shiftLayer && control is not null)
+                existing = control.SoftwareDefault
+                    ?? BuiltinActions.All.FirstOrDefault(a => a.Name.Equals(control.DefaultAction, StringComparison.OrdinalIgnoreCase)).Id;
+            string[] current = Assignments.Split(existing);
+            if (current.Length > 0 && !Assignments.Has(existing, id))
+            {
+                string[] special = [BuiltinActions.GShift, BuiltinActions.DpiShift, BuiltinActions.Disabled];
+                if (special.Contains(id) || current.Any(special.Contains))
+                {
+                    const string why = "G-Shift, DPI Shift and Disabled can't share a button with another action";
+                    Write(why);
+                    Notice?.Invoke(why);
+                    return false;
+                }
+                id = Assignments.Join([.. current, id]);
+            }
+            else if (current.Length > 0) id = existing;
+        }
+        if (IsOnboard && id is not null && id.Contains(Assignments.Separator))
+        {
+            const string why = "The mouse can only store one action per button";
+            Write(why);
+            Notice?.Invoke(why);
+            return false;
+        }
         if (IsOnboard && OnboardRefusal(bit, id) is { } refusal)
         {
             Write(refusal);
             Notice?.Invoke(refusal);
             return false;
         }
-        Dictionary<int, string> bindings = shiftLayer ? ActiveProfile.ShiftAssignments : ActiveProfile.Assignments;
+        Dictionary<int, string> bindings = layer;
         if (string.IsNullOrEmpty(id)) bindings.Remove(bit); else bindings[bit] = id;
         Save();
         return true;
@@ -759,6 +794,13 @@ internal sealed class MouseService : IDisposable
     private void RunAssignment(int bit, bool down, bool pulse, string assignment)
     {
         MouseProfile profile = ActiveProfile;
+        if (assignment.Contains(Assignments.Separator))
+        {
+            // Each action gets its own trigger so held keys, clicks and macros don't collide on the one button.
+            string[] parts = Assignments.Split(assignment);
+            for (int i = 0; i < parts.Length; i++) RunAssignment(i == 0 ? bit : bit | (i << 24), down, pulse, parts[i]);
+            return;
+        }
         switch (assignment)
         {
             case "" or BuiltinActions.Disabled:

@@ -13,6 +13,22 @@ public static class Assignments
     /// <summary>"onboard:900A0000": an on-board binding BetterGhub has no action for, kept as its stored bytes.</summary>
     public const string OnboardPrefix = "onboard:";
 
+    /// <summary>Several actions on one button are stored as their ids joined by this (it can't occur in any id).</summary>
+    public const char Separator = '\n';
+
+    /// <summary>The actions in a (possibly multi-action) binding; empty for none.</summary>
+    public static string[] Split(string? id) =>
+        string.IsNullOrEmpty(id) ? [] : id.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
+
+    public static string? Join(IEnumerable<string> ids)
+    {
+        string[] list = [.. ids.Distinct()];
+        return list.Length == 0 ? null : string.Join(Separator, list);
+    }
+
+    /// <summary>Whether <paramref name="id"/> is one of the actions in <paramref name="binding"/>.</summary>
+    public static bool Has(string? binding, string id) => Split(binding).Contains(id);
+
     public static string KeyId(string combo) => KeyPrefix + combo;
     public static string LaunchId(string path) => LaunchPrefix + path;
 

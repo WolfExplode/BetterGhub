@@ -71,7 +71,10 @@
             <Grid Margin="36,22,36,0">
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock x:Name="MouseTitle" Text="G502 X LIGHTSPEED" Style="{StaticResource Overline}" Margin="0,0,0,2"/>
-                    <TextBlock x:Name="PageTitle" Style="{StaticResource H1}" Text="Assignments"/>
+                    <StackPanel Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
+                        <TextBlock x:Name="PageTitle" Style="{StaticResource H1}" Text="Assignments" VerticalAlignment="Center"/>
+                        <StackPanel x:Name="InfoHost" VerticalAlignment="Center" Margin="10,4,0,0"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- Profile picker -->

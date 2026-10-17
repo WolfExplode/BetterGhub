@@ -43,6 +43,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         diagram = new MouseDiagram(service) { Selected = selected, Margin = new Thickness(0, 0, 0, 10) };
         diagram.ControlClicked += Select;
         diagram.AssignmentDropped += AssignDropped;
+        diagram.ActionRemoved += RemoveAction;
         diagram.ResetRequested += ResetControl;
         diagram.ActivationRequested += (control, onRelease) =>
         {
@@ -180,13 +181,34 @@ internal sealed class AssignmentsPage : UserControl, IPage
         Refresh();
     }
 
-    private void AssignDropped(MouseControl control, string id)
+    public (string Title, string Text)[] Tips =>
+    [
+        ("Assign an action", "Drag an action from the list onto a button on the mouse, or right-click it and choose Assign."),
+        ("Several actions on one button", "Hold Ctrl while dropping an action onto a button to add it alongside the button's current actions (including its default, like Middle click). Without Ctrl it replaces them. On-board profiles store one action per button."),
+        ("Remove one action", "Right-click a button on the mouse to list its actions. Click the trash can next to one to remove just that action."),
+        ("Keys", "Record a key with Ctrl, Shift, Alt or Win (e.g. Alt+Tab), or pick a single key. It stays down for as long as you hold the button."),
+        ("Reset a button", "Right-click a button and choose Reset to default (or Clear G-Shift action on the G-Shift layer)."),
+        ("Activate on press or release", "Right-click a button to make its action run when released, so it can also be held for button combos."),
+    ];
+
+    private void AssignDropped(MouseControl control, string id, bool add)
     {
         if (service.Settings.BitFor(control) is not int bit) return;
         if (id == BuiltinActions.GShift && diagram.ShiftLayer) { shell.ShowToast("G-Shift can't be assigned on the G-Shift layer"); return; }
         if (id == BuiltinActions.DpiShift && control.IsWheel) { shell.ShowToast("DPI Shift can't be assigned to the wheel"); return; }
-        if (!Assign(bit, id)) return; // The service already explained why.
-        shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(id)}");
+        if (!Assign(bit, id, add)) return; // The service already explained why.
+        Dictionary<int, string> layer = diagram.ShiftLayer ? service.ActiveProfile.ShiftAssignments : service.ActiveProfile.Assignments;
+        shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(layer.GetValueOrDefault(bit) ?? id)}");
+        Refresh();
+    }
+
+    private void RemoveAction(MouseControl control, string id)
+    {
+        if (service.Settings.BitFor(control) is not int bit) return;
+        Dictionary<int, string> layer = diagram.ShiftLayer ? service.ActiveProfile.ShiftAssignments : service.ActiveProfile.Assignments;
+        string? rest = Assignments.Join(Assignments.Split(layer.GetValueOrDefault(bit)).Where(a => a != id));
+        if (!Assign(bit, rest)) return;
+        shell.ShowToast($"Removed {service.Settings.DescribeAssignment(id)} from {control.Label}");
         Refresh();
     }
 
@@ -325,7 +347,6 @@ internal sealed class AssignmentsPage : UserControl, IPage
         // Assignment picker
         header.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
         if (comboTarget is { } chosen) header.Children.Add(ComboTargetBanner(chosen));
-        else if (!comboMode) header.Children.Add(Ui.Text($"Drag an action onto a button on the mouse, or right-click it to assign it to {selected.Label}.", "Body", size: 12, wrap: true).With(new Thickness(0, 0, 8, 8)));
         Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
         string current = comboTarget?.Action ?? bindings.GetValueOrDefault(target) ?? "";
         string key = comboTarget is not null ? "combo:" + comboTarget.Id : selected.Id + (diagram.ShiftLayer ? "/shift" : "");
@@ -333,7 +354,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         {
             tabKey = key;
             search = "";
-            if (TabFor(current) is { } assignedTab) tab = assignedTab;
+            if (TabFor(Assignments.Split(current).FirstOrDefault() ?? "") is { } assignedTab) tab = assignedTab;
         }
 
         if (tab == "Combos" && (service.IsOnboard || comboTarget is not null)) tab = "Commands";
@@ -412,7 +433,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         options.Children.Clear();
         // Which controls on this layer already use each assignment, like G HUB's right-hand column.
         Dictionary<string, string> usage = bindings
-            .Select(x => (x.Value, Control: service.Settings.ControlFor(x.Key)))
+            .SelectMany(x => Assignments.Split(x.Value).Select(v => (Value: v, Control: service.Settings.ControlFor(x.Key))))
             .Where(x => x.Control is not null)
             .GroupBy(x => x.Value)
             .ToDictionary(g => g.Key, g => string.Join(", ", g.Select(x => ShortLabel(x.Control!))));
@@ -440,20 +461,19 @@ internal sealed class AssignmentsPage : UserControl, IPage
                     foreach ((_, string combo, string name) in items)
                     {
                         string id = Assignments.KeyId(combo);
-                        options.Children.Add(ListRow(id, current == id, Assignments.DisplayCombo(combo), name, Used(id), bit, comboColumn: true));
+                        options.Children.Add(ListRow(id, Assignments.Has(current, id), Assignments.DisplayCombo(combo), name, Used(id), bit, comboColumn: true));
                     }
                 }
                 break;
 
             case "Keys":
                 options.Children.Add(ShortcutRecorder(bit));
-                options.Children.Add(Ui.Text("Record a key with Ctrl, Shift, Alt or Win (e.g. Alt+Tab), or pick a single key below. It stays down for as long as you hold the button.", "Body", size: 12, wrap: true).With(new Thickness(2, 4, 8, 8)));
                 before = options.Children.Count;
                 foreach ((string keyName, string name) in Assignments.Keys)
                 {
                     if (!Matches(name, keyName)) continue;
                     string id = Assignments.KeyId(keyName);
-                    options.Children.Add(ListRow(id, current == id, name, null, Used(id), bit));
+                    options.Children.Add(ListRow(id, Assignments.Has(current, id), name, null, Used(id), bit));
                 }
                 break;
 
@@ -463,7 +483,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
                 StackPanel list = new();
                 options.Children.Add(list);
                 foreach (MacroDefinition macro in service.Settings.Macros.Where(m => Matches(m.Name)))
-                    list.Children.Add(OptionRow(macro.Id, current == macro.Id, macro.Name, ModeName(macro.Mode) + $" · {macro.Steps.Count} step{(macro.Steps.Count == 1 ? "" : "s")}", bit, macro));
+                    list.Children.Add(OptionRow(macro.Id, Assignments.Has(current, macro.Id), macro.Name, ModeName(macro.Mode) + $" · {macro.Steps.Count} step{(macro.Steps.Count == 1 ? "" : "s")}", bit, macro));
                 if (service.Settings.Macros.Count == 0)
                     list.Children.Add(Ui.Text("No macros yet. Create one and it will be assigned to this button.", "Body", size: 12).With(new Thickness(2, 4, 8, 4)));
                 else if (list.Children.Count == 0)
@@ -483,7 +503,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
                         .Where(x => Assignments.LaunchPath(x) is not null)
                         .Distinct();
                     foreach (string id in launches)
-                        options.Children.Add(ListRow(id, current == id, Path.GetFileNameWithoutExtension(Assignments.LaunchPath(id)!), null, Used(id), bit, tooltip: Assignments.LaunchPath(id)));
+                        options.Children.Add(ListRow(id, Assignments.Has(current, id), Path.GetFileNameWithoutExtension(Assignments.LaunchPath(id)!), null, Used(id), bit, tooltip: Assignments.LaunchPath(id)));
                     Button add = Ui.Button("ADD APPLICATION", () => PickApplication(bit), "GhostBtn", "");
                     add.HorizontalAlignment = HorizontalAlignment.Left;
                     add.IsEnabled = !service.IsOnboard;
@@ -499,7 +519,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
                     if (items.Count == 0) continue;
                     options.Children.Add(Section(group.Key));
                     foreach ((string id, string name, string description, _) in items)
-                        options.Children.Add(ListRow(id, current == id, name, null, Used(id), bit, tooltip: description.Length > 0 ? description : null));
+                        options.Children.Add(ListRow(id, Assignments.Has(current, id), name, null, Used(id), bit, tooltip: description.Length > 0 ? description : null));
                 }
                 break;
         }
@@ -1039,7 +1059,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     /// that puts it back unless the change is kept, so a mouse left without a working click recovers by itself.
     /// The G-Shift layer is exempt: letting go of G-Shift always brings the normal click back.
     /// </summary>
-    private bool Assign(int bit, string? id)
+    private bool Assign(int bit, string? id, bool add = false)
     {
         if (comboTarget is { } combo)
         {
@@ -1058,7 +1078,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         bool shift = diagram.ShiftLayer;
         MouseProfile profile = service.ActiveProfile;
         string? before = (shift ? profile.ShiftAssignments : profile.Assignments).GetValueOrDefault(bit);
-        if (!service.Assign(shift, bit, id)) return false;
+        if (!service.Assign(shift, bit, id, add)) return false;
         if (!shift && service.Settings.ControlFor(bit) is { Id: "G1" or "G2" } control && Clicks(control, before) && !Clicks(control, id))
             shell.ConfirmChange($"You just unassigned your {control.DefaultAction.ToLowerInvariant()}!", () =>
             {
@@ -1074,7 +1094,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
     /// <summary>Whether <paramref name="id"/> on left or right click still sends that click.</summary>
     private static bool Clicks(MouseControl control, string? id) =>
-        string.IsNullOrEmpty(id) || id == (control.Id == "G1" ? BuiltinActions.LeftClick : BuiltinActions.RightClick);
+        string.IsNullOrEmpty(id) || Assignments.Has(id, control.Id == "G1" ? BuiltinActions.LeftClick : BuiltinActions.RightClick);
 
     // ── Calibration ───────────────────────────────────────────────────────────
 

@@ -16,6 +16,8 @@ namespace BetterGhub.Views;
 internal interface IPage
 {
     void Refresh();
+    /// <summary>Hidden interactions and features, listed in the info popup next to the page title.</summary>
+    (string Title, string Text)[] Tips => [];
 }
 
 public partial class MainWindow : Window
@@ -92,6 +94,34 @@ public partial class MainWindow : Window
         if (sender is RadioButton item) Navigate(AutomationProperties.GetName(item));
     }
 
+    /// <summary>An info button beside the page title that lists the page's hidden interactions; absent when it has none.</summary>
+    private void ShowInfo(IPage? page)
+    {
+        InfoHost.Children.Clear();
+        (string Title, string Text)[] tips = page?.Tips ?? [];
+        if (tips.Length == 0) return;
+        Button info = Ui.Button("", () => { }, "GhostBtn", "", "Tips and hidden features");
+        info.Padding = new Thickness(7, 5, 7, 5);
+        StackPanel list = new() { Margin = new Thickness(2) };
+        foreach ((string title, string text) in tips)
+        {
+            list.Children.Add(Ui.Text(title, size: 12.5, bold: true, color: "Accent").With(new Thickness(0, 8, 0, 2)));
+            list.Children.Add(Ui.Text(text, "Body", size: 12, wrap: true));
+        }
+        System.Windows.Controls.Primitives.Popup popup = new()
+        {
+            PlacementTarget = info, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom, StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = Ui.Brush("Surface2"), BorderBrush = Ui.Brush("Accent"), BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 6, 14, 12), Width = 340, Margin = new Thickness(0, 6, 0, 0), Child = list
+            }
+        };
+        info.Click += (_, _) => popup.IsOpen = !popup.IsOpen;
+        InfoHost.Children.Add(info);
+    }
+
     internal void Navigate(string name)
     {
         PageTitle.Text = name;
@@ -109,6 +139,7 @@ public partial class MainWindow : Window
         }
         else (page as IPage)?.Refresh();
         PageHost.Content = page;
+        ShowInfo(page as IPage);
         foreach (RadioButton item in Nav.Children.OfType<RadioButton>())
             if (AutomationProperties.GetName(item) == name && item.IsChecked != true) item.IsChecked = true;
     }
