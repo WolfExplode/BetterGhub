@@ -31,6 +31,8 @@ internal sealed class MouseDiagram : Viewbox
     public event Action<MouseControl, string>? AssignmentDropped;
     /// <summary>"Reset to default" was chosen from a control's right-click menu.</summary>
     public event Action<MouseControl>? ResetRequested;
+    /// <summary>"Activate on press / release" was chosen from a control's right-click menu (true: on release).</summary>
+    public event Action<MouseControl, bool>? ActivationRequested;
 
     /// <summary>Drag-and-drop data format carrying an assignment id.</summary>
     public const string DragFormat = "BetterGhub.Assignment";
@@ -176,7 +178,14 @@ internal sealed class MouseDiagram : Viewbox
             else if (assigned is not null) titleRow.Children.Add(Ui.Glyph("\uE8AB", 12, "Accent").With(new Thickness(0, 0, 7, 0)));
             titleRow.Children.Add(title);
             overline.HorizontalAlignment = titleRow.HorizontalAlignment;
-            label.Child = new StackPanel { Children = { overline, titleRow } };
+            StackPanel labelContent = new() { Children = { overline, titleRow } };
+            if (!owner.CalibrationMode && bit is int tapBit && !control.IsWheel && !owner.service.IsOnboard && !owner.ShiftLayer && owner.service.TapOnly(tapBit))
+                labelContent.Children.Add(new TextBlock
+                {
+                    Text = "ON RELEASE", FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = Ui.Brush("Faint"),
+                    HorizontalAlignment = titleRow.HorizontalAlignment, Margin = new Thickness(0, 1, 0, 0)
+                });
+            label.Child = labelContent;
             label.MouseLeftButtonUp += (_, _) => owner.ControlClicked?.Invoke(control);
             label.MouseEnter += (_, _) => Highlight(true);
             label.MouseLeave += (_, _) => Highlight(false);
@@ -227,7 +236,19 @@ internal sealed class MouseDiagram : Viewbox
                 IsEnabled = assigned
             };
             reset.Click += (_, _) => owner.ResetRequested?.Invoke(control);
-            return new ContextMenu { Items = { reset } };
+            ContextMenu menu = new() { Items = { reset } };
+            if (owner.service.Settings.BitFor(control) is int bit && !control.IsWheel && !owner.service.IsOnboard && !owner.ShiftLayer)
+            {
+                bool tap = owner.service.TapOnly(bit);
+                menu.Items.Add(new Separator());
+                foreach ((string header, bool onRelease) in new[] { ("Activate on press", false), ("Activate on release", true) })
+                {
+                    MenuItem item = new() { Header = header, IsCheckable = true, IsChecked = tap == onRelease, StaysOpenOnClick = false };
+                    item.Click += (_, _) => owner.ActivationRequested?.Invoke(control, onRelease);
+                    menu.Items.Add(item);
+                }
+            }
+            return menu;
         }
 
         public void AddTo(Canvas canvas)

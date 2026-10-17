@@ -55,6 +55,9 @@ internal static class Snapshot
         window.FindPage<AssignmentsPage>()?.SelectControl("G4");
         await Settle();
         Save(window, Path.Combine(folder, $"assignments-side{suffix}.png"));
+        window.FindPage<AssignmentsPage>()?.ShowCombos();
+        await Settle();
+        Save(window, Path.Combine(folder, $"assignments-combos{suffix}.png"));
 
         window.Service.SimulateOnboard();
         foreach (string page in new[] { "Assignments", "Sensitivity" })

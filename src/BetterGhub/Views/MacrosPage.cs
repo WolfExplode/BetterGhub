@@ -249,6 +249,8 @@ internal sealed class MacrosPage : UserControl, IPage
                 uses.Add(ControlName(bit) + (named ? $" · {profile.Name}" : ""));
             foreach ((int bit, string id) in profile.ShiftAssignments.Where(x => x.Value == item.Id))
                 uses.Add("G-Shift+" + ControlName(bit) + (named ? $" · {profile.Name}" : ""));
+            foreach (ComboSlot combo in profile.ComboSlots.Where(c => c.Action == item.Id))
+                uses.Add(string.Join("+", combo.Bits.Select(ControlName)) + (named ? $" · {profile.Name}" : ""));
         }
         foreach (MouseProfile profile in service.Settings.Profiles) Add(profile, service.Settings.Profiles.Count > 1);
         // The running on-board slot isn't one of the saved profiles; its buttons are read from the mouse.

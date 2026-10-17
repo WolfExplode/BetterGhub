@@ -169,7 +169,7 @@ internal sealed class ProfilesPage : UserControl, IPage
             ? "Used whenever no application profile matches the focused window."
             : $"Active while {profile.ApplicationPath} has focus.", "Body").With(new Thickness(0, 4, 0, 18)));
 
-        int assigned = profile.Assignments.Count + profile.ShiftAssignments.Count;
+        int assigned = profile.Assignments.Count + profile.ShiftAssignments.Count + profile.ComboSlots.Count(c => c.Action.Length > 0);
         WrapPanel facts = new();
         facts.Children.Add(Fact("ASSIGNMENTS", assigned == 0 ? "None" : $"{assigned} button{(assigned == 1 ? "" : "s")}"));
         facts.Children.Add(Fact("DPI SPEEDS", string.Join(" · ", profile.DpiStages)));
@@ -195,6 +195,8 @@ internal sealed class ProfilesPage : UserControl, IPage
                 popup.IsOpen = false;
                 target.Assignments = new Dictionary<int, string>(source.Assignments);
                 target.ShiftAssignments = new Dictionary<int, string>(source.ShiftAssignments);
+                target.ComboSlots = [.. source.ComboSlots.Select(c => new ComboSlot { Bits = [.. c.Bits], Action = c.Action, HoldAll = c.HoldAll })];
+                target.TapBits = [.. source.TapBits];
                 target.DpiStages = [.. source.DpiStages];
                 target.Dpi = source.Dpi;
                 target.ShiftDpi = source.ShiftDpi;

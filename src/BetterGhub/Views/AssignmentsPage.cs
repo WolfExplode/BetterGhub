@@ -25,6 +25,14 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private string tabKey = "";
     private string search = "";
     private bool calibrating;
+    /// <summary>The combo whose action is being chosen: the action tabs then assign to it instead of the selected control.</summary>
+    private ComboSlot? comboTarget;
+    /// <summary>The combo whose buttons are being re-recorded; null while recording a new one.</summary>
+    private ComboSlot? rerecording;
+    /// <summary>The button being replaced while re-recording a combo.</summary>
+    private int rerecordBit;
+    /// <summary>The selected button of each combo (by combo id): the one its record button replaces. Defaults to the pressed button.</summary>
+    private readonly Dictionary<string, int> chipSelection = [];
     /// <summary>Scroll the list to the selected control's assignment on the next render, after picking a control.</summary>
     private bool revealCurrent;
 
@@ -36,6 +44,13 @@ internal sealed class AssignmentsPage : UserControl, IPage
         diagram.ControlClicked += Select;
         diagram.AssignmentDropped += AssignDropped;
         diagram.ResetRequested += ResetControl;
+        diagram.ActivationRequested += (control, onRelease) =>
+        {
+            if (service.Settings.BitFor(control) is not int bit) return;
+            service.SetTapOnly(bit, onRelease);
+            shell.ShowToast(onRelease ? $"{control.Label} acts when released, so it can be held for combos" : $"{control.Label} acts when pressed");
+            Refresh();
+        };
 
         Grid layout = new() { Margin = new Thickness(36, 8, 36, 28) };
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(350) });
@@ -108,7 +123,13 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
         service.ButtonChanged += OnButton;
         service.Calibrated += (control, _) => { if (calibrating && IsVisible) shell.ShowToast($"{control.Label} calibrated"); Refresh(); };
-        IsVisibleChanged += (_, _) => { if (!IsVisible && calibrating) SetCalibrating(false); };
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) return;
+            if (calibrating) SetCalibrating(false);
+            service.CancelComboRecording();
+        };
+        service.ComboRecorded += OnComboRecorded;
         service.StateChanged += () => { if (IsLoaded) RenderPanel(); };
         Refresh();
     }
@@ -151,6 +172,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     {
         selected = control;
         revealCurrent = true;
+        comboTarget = null;
         diagram.Selected = control;
         if (calibrating && control.Calibratable) service.StartLearning(control);
         else if (service.Learning is not null) service.CancelLearning();
@@ -185,6 +207,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
         row.Cursor = System.Windows.Input.Cursors.Hand;
         row.Click += (_, _) =>
         {
+            // Choosing a combo's action: there's no button to drag onto, so a click picks it.
+            if (comboTarget is not null)
+            {
+                Assign(0, id);
+                return;
+            }
             row.IsChecked = isCurrent;
             if (!isCurrent) shell.ShowToast($"Drag {service.Settings.DescribeAssignment(id)} onto a button, or right-click it, to assign it");
         };
@@ -264,8 +292,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
         header.Children.Clear();
         MouseProfile profile = service.ActiveProfile;
         int? bit = service.Settings.BitFor(selected);
+        // A combo picked on the Combos tab that no longer exists (undo, profile switch) stops being the target.
+        if (comboTarget is not null && (service.IsOnboard || !profile.ComboSlots.Contains(comboTarget))) comboTarget = null;
+        // Combos don't involve the selected control, so they work even when it isn't calibrated.
+        bool comboMode = !service.IsOnboard && (comboTarget is not null || tab == "Combos");
         // Notices sit above the picker in the fixed header; without a picker they scroll with the rest.
-        StackPanel top = bit is not null ? header : panel;
+        StackPanel top = bit is not null || comboMode ? header : panel;
 
         if (diagram.ShiftLayer)
             top.Children.Add(Ui.Text(
@@ -274,7 +306,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
                     : "Editing the G-Shift layer. Assign G-Shift to a button on the Default layer to use it.",
                 "Body", size: 12, color: "Accent", wrap: true).With(new Thickness(0, 0, 8, 16)));
 
-        if (bit is null && service.Learning?.Id != selected.Id)
+        if (bit is null && !comboMode && service.Learning?.Id != selected.Id)
             top.Children.Add(Ui.Text($"{selected.Label} isn't calibrated yet. Use Calibrate buttons to set it.", "Body", size: 12, color: "Warning", wrap: true).With(new Thickness(0, 0, 8, 12)));
 
         if (service.Learning?.Id == selected.Id)
@@ -287,14 +319,16 @@ internal sealed class AssignmentsPage : UserControl, IPage
             reset.HorizontalAlignment = HorizontalAlignment.Left;
             top.Children.Add(reset.With(new Thickness(0, 0, 0, 22)));
         }
-        if (bit is null) return;
+        if (bit is null && !comboMode) return;
+        int target = bit ?? 0; // Unused while choosing a combo's action.
 
         // Assignment picker
         header.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
-        header.Children.Add(Ui.Text($"Drag an action onto a button on the mouse, or right-click it to assign it to {selected.Label}.", "Body", size: 12, wrap: true).With(new Thickness(0, 0, 8, 8)));
+        if (comboTarget is { } chosen) header.Children.Add(ComboTargetBanner(chosen));
+        else if (!comboMode) header.Children.Add(Ui.Text($"Drag an action onto a button on the mouse, or right-click it to assign it to {selected.Label}.", "Body", size: 12, wrap: true).With(new Thickness(0, 0, 8, 8)));
         Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
-        string current = bindings.GetValueOrDefault(bit.Value) ?? "";
-        string key = selected.Id + (diagram.ShiftLayer ? "/shift" : "");
+        string current = comboTarget?.Action ?? bindings.GetValueOrDefault(target) ?? "";
+        string key = comboTarget is not null ? "combo:" + comboTarget.Id : selected.Id + (diagram.ShiftLayer ? "/shift" : "");
         if (key != tabKey)
         {
             tabKey = key;
@@ -302,18 +336,33 @@ internal sealed class AssignmentsPage : UserControl, IPage
             if (TabFor(current) is { } assignedTab) tab = assignedTab;
         }
 
+        if (tab == "Combos" && (service.IsOnboard || comboTarget is not null)) tab = "Commands";
         WrapPanel tabs = new() { Margin = new Thickness(0, 0, 8, 8) };
         foreach (string name in Tabs)
         {
-            RadioButton item = new() { Content = name.ToUpperInvariant(), Style = Ui.Style("TextTab"), GroupName = "AssignTab", IsChecked = tab == name };
-            item.Checked += (_, _) => { if (tab == name) return; tab = name; RenderPanel(); };
+            RadioButton item = new() { Content = (name == "Combos" ? "Button combos" : name).ToUpperInvariant(), Style = Ui.Style("TextTab"), GroupName = "AssignTab", IsChecked = tab == name };
+            item.Checked += (_, _) =>
+            {
+                if (tab == name) return;
+                tab = name;
+                if (name == "Combos") comboTarget = null;
+                RenderPanel();
+            };
+            // Combos run in host mode only, and while choosing a combo's action the tab would only cancel it.
+            if (name == "Combos" && (service.IsOnboard || comboTarget is not null)) continue;
             tabs.Children.Add(item);
         }
         header.Children.Add(tabs);
 
+        if (tab == "Combos")
+        {
+            RenderCombos();
+            return;
+        }
+
         StackPanel options = new();
         TextBox filter = new() { Text = search, Margin = new Thickness(0, 0, 8, 10) };
-        filter.TextChanged += (_, _) => { search = filter.Text; RenderOptions(options, bit.Value, current, bindings); };
+        filter.TextChanged += (_, _) => { search = filter.Text; RenderOptions(options, target, current, bindings); };
         header.Children.Add(Ui.Placeholder(filter, tab switch
         {
             "Commands" => "Search for a command",
@@ -323,7 +372,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         }));
 
         panel.Children.Add(options);
-        RenderOptions(options, bit.Value, current, bindings);
+        RenderOptions(options, target, current, bindings);
         if (revealCurrent) RevealCurrent(options);
     }
 
@@ -339,7 +388,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
             row.BringIntoView(new Rect(0, -48, row.ActualWidth, row.ActualHeight + 96)));
     }
 
-    private static readonly string[] Tabs = ["Commands", "Keys", "Macros", "System"];
+    private static readonly string[] Tabs = ["Commands", "Keys", "Macros", "System", "Combos"];
 
     /// <summary>The tab that lists <paramref name="id"/>, or null when nothing is assigned.</summary>
     private string? TabFor(string id)
@@ -519,12 +568,14 @@ internal sealed class AssignmentsPage : UserControl, IPage
     {
         MenuItem assign = new()
         {
-            Header = isCurrent ? $"Already assigned to {selected.Label}" : $"Assign to {selected.Label}",
+            Header = comboTarget is not null ? (isCurrent ? "Already this combo's action" : "Use for this combo")
+                : isCurrent ? $"Already assigned to {selected.Label}" : $"Assign to {selected.Label}",
             Icon = Ui.Glyph("", 12),
             IsEnabled = !isCurrent
         };
         assign.Click += (_, _) =>
         {
+            if (comboTarget is not null) { Assign(bit, id); return; }
             if (!Assign(bit, id)) return; // The service already explained why.
             shell.ShowToast($"{selected.Label} → {service.Settings.DescribeAssignment(id)}");
             Refresh();
@@ -678,10 +729,16 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
     private void CreateMacroFor(int bit)
     {
-        MacroDefinition macro = new() { Name = $"{selected.Label} macro" };
+        MacroDefinition macro = new() { Name = comboTarget is { } combo ? $"{service.DescribeCombo(combo.Bits)} macro" : $"{selected.Label} macro" };
         service.Settings.Macros.Add(macro);
         // The mouse can't store a macro without steps, so on-board it's assigned once it has some.
         if (service.IsOnboard) service.Save();
+        else if (comboTarget is not null)
+        {
+            Assign(bit, macro.Id);
+            shell.OpenMacro(macro);
+            return;
+        }
         else Assign(bit, macro.Id);
         shell.OpenMacro(macro);
     }
@@ -694,6 +751,287 @@ internal sealed class AssignmentsPage : UserControl, IPage
         _ => "Sequence"
     };
 
+    // ── Combos ────────────────────────────────────────────────────────────────
+
+    /// <summary>The Combos tab: each combo's buttons and action, plus recording new ones from the mouse.</summary>
+    private void RenderCombos()
+    {
+        if (service.RecordingCombo)
+            panel.Children.Add(RecordingBox().With(new Thickness(0, 0, 8, 12)));
+        else
+        {
+            Button add = Ui.Button("Add combo", () => StartRecording(null), "Btn", "","Press the buttons together on your mouse");
+            add.HorizontalAlignment = HorizontalAlignment.Left;
+            add.IsEnabled = service.State == ConnectionState.Connected;
+            if (!add.IsEnabled) add.ToolTip = "Connect the mouse to record a combo";
+            ToolTipService.SetShowOnDisabled(add, true);
+            panel.Children.Add(add.With(new Thickness(0, 0, 0, 12)));
+        }
+
+        List<ComboSlot> combos = service.ActiveProfile.ComboSlots;
+        if (combos.Count == 0)
+            panel.Children.Add(Ui.Text("No combos yet.", "Body", size: 12, color: "Faint").With(new Thickness(2, 4, 8, 4)));
+        foreach (ComboSlot combo in combos) panel.Children.Add(ComboRow(combo));
+    }
+
+    private Border ComboRow(ComboSlot combo)
+    {
+        Grid content = new();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        bool hasAction = combo.Action.Length > 0;
+        bool recordingThis = service.RecordingCombo && rerecording == combo;
+        StackPanel text = Ui.Row(7,
+            service.Settings.IsMacro(combo.Action) ? Ui.MacroMark() : (FrameworkElement)Ui.Glyph(hasAction ? "" : "", 12, hasAction ? "Accent" : "Warning"),
+            Ui.Text(hasAction ? service.Settings.DescribeAssignment(combo.Action) : "No action yet", size: 12.5, color: hasAction ? "Text" : "Warning"));
+        text.VerticalAlignment = VerticalAlignment.Center;
+        // Clicking the action chooses a different one.
+        Border choose = new()
+        {
+            Child = text, Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand, CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(6, 4, 10, 4), Margin = new Thickness(-6, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center, ToolTip = "Click to choose a command, key, macro or system action"
+        };
+        choose.MouseEnter += (_, _) => choose.Background = Ui.Brush("Hover");
+        choose.MouseLeave += (_, _) => choose.Background = Brushes.Transparent;
+        choose.MouseLeftButtonUp += (_, _) =>
+        {
+            comboTarget = combo;
+            tabKey = ""; // Opens the tab that lists its current action.
+            tab = "Commands";
+            RenderPanel();
+        };
+        content.Children.Add(choose);
+
+        Button record = Ui.Button("", () => StartRecording(combo), "GhostBtn", "", "Record a different button in place of the selected one");
+        Button delete = Ui.DeleteButton("", () =>
+        {
+            service.DeleteCombo(combo);
+            shell.ShowToast($"Deleted combo {service.DescribeCombo(combo.Bits)}");
+            RenderPanel();
+        }, "Delete combo");
+        record.IsEnabled = service.State == ConnectionState.Connected && !service.RecordingCombo;
+        foreach (Button b in new[] { record, delete }) b.Padding = new Thickness(8, 6, 8, 6);
+        StackPanel actions = Ui.Row(2, record, delete);
+        actions.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(actions, 1);
+        content.Children.Add(actions);
+
+        FrameworkElement buttons = recordingThis ? Ui.Text("Recording…", size: 14, bold: true, color: "Warning") : ComboChips(combo);
+        StackPanel body = new() { Children = { buttons, content.With(new Thickness(0, 6, 0, 0)) } };
+        if (!recordingThis) foreach (int held in combo.HoldBits) if (HeldConflict(held) is { } hint) body.Children.Add(hint);
+
+        return new Border
+        {
+            Background = Ui.Brush("Surface2"), CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 10, 8, 10),
+            Margin = new Thickness(0, 0, 8, 6), Child = body
+        };
+    }
+
+    /// <summary>The combo's selected button, falling back to the pressed one when none (or one that's gone) is selected.</summary>
+    private int SelectedBit(ComboSlot combo) =>
+        chipSelection.TryGetValue(combo.Id, out int bit) && combo.Bits.Contains(bit) ? bit : combo.Bits.LastOrDefault();
+
+    /// <summary>
+    /// "HOLD G6 → PRESS G5", or "HOLD G4 + HOLD G6 · 250 ms" when all are held together: a chip per button.
+    /// The selected one is outlined; the record button replaces it.
+    /// </summary>
+    private StackPanel ComboChips(ComboSlot combo)
+    {
+        StackPanel row = new() { Orientation = Orientation.Horizontal };
+        for (int i = 0; i < combo.Bits.Count; i++)
+        {
+            int bit = combo.Bits[i];
+            bool isPress = bit == combo.PressBit;
+            bool selectedChip = bit == SelectedBit(combo);
+            if (i > 0) row.Children.Add(Ui.Text(isPress ? "→" : "+", size: 13, color: "Faint").With(new Thickness(6, 0, 6, 0)));
+            StackPanel chip = new()
+            {
+                Children =
+                {
+                    Ui.Text(isPress ? "PRESS" : "HOLD", size: 9.5, bold: true, color: selectedChip ? "Accent" : "Muted"),
+                    Ui.Text(service.DescribeCombo([bit]), size: 14, bold: true, color: "Text")
+                }
+            };
+            Border box = new()
+            {
+                Child = chip, Padding = new Thickness(8, 3, 8, 4), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
+                BorderBrush = Ui.Brush(selectedChip ? "Accent" : "Faint"), Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand
+            };
+            box.MouseLeftButtonUp += (_, _) =>
+            {
+                if (SelectedBit(combo) == bit) return;
+                chipSelection[combo.Id] = bit;
+                RenderPanel();
+            };
+            box.ContextMenu = ChipMenu(combo, bit, isPress);
+            ToolTipService.SetInitialShowDelay(box, 600);
+            box.ToolTip = "Click to select it, then use the record button to replace it. Right-click to change between hold and press.";
+            row.Children.Add(box);
+        }
+        if (combo.HoldAll)
+        {
+            TextBlock wait = Ui.Text($"{MouseService.ComboHoldMs} ms", size: 11.5, color: "Faint").With(new Thickness(10, 0, 0, 0));
+            wait.VerticalAlignment = VerticalAlignment.Center;
+            wait.ToolTip = $"Runs once all of these have been held together for {MouseService.ComboHoldMs} ms";
+            row.Children.Add(wait);
+        }
+        return row;
+    }
+
+    /// <summary>
+    /// Right-click menu on a combo's button. Press makes it the one pressed while the others are held; Hold on the
+    /// pressed button makes every button held, so the combo runs once they've all been down for a moment.
+    /// </summary>
+    private ContextMenu ChipMenu(ComboSlot combo, int bit, bool isPress)
+    {
+        void Apply(List<int> bits, bool holdAll)
+        {
+            if (service.HasCombo(bits, combo, holdAll)) { shell.ShowToast("That combo already exists"); return; }
+            service.SetComboButtons(combo, bits, holdAll);
+            RenderPanel();
+        }
+        MenuItem hold = new() { Header = "Hold", IsCheckable = true, IsChecked = !isPress };
+        MenuItem press = new() { Header = "Press", IsCheckable = true, IsChecked = isPress };
+        hold.Click += (_, _) =>
+        {
+            if (isPress) Apply([.. combo.Bits], holdAll: true);
+            else hold.IsChecked = true;
+        };
+        press.Click += (_, _) =>
+        {
+            if (isPress) { press.IsChecked = true; return; }
+            Apply([.. combo.Bits.Where(b => b != bit), bit], holdAll: false);
+        };
+        return new ContextMenu { Items = { hold, press } };
+    }
+
+    /// <summary>
+    /// A note under a combo when one of its held buttons runs its own action the moment it goes down (so holding it
+    /// for the combo also triggers it), with a button to make it act on tap instead.
+    /// </summary>
+    private FrameworkElement? HeldConflict(int bit)
+    {
+        string own = service.EffectiveAssignment(bit);
+        if (service.TapOnly(bit) || own is "" or BuiltinActions.Disabled or BuiltinActions.GShift or BuiltinActions.DpiShift) return null;
+        string name = service.DescribeCombo([bit]);
+        TextBlock note = Ui.Text($"{name} runs {service.Settings.DescribeAssignment(own)} as soon as you hold it.", "Body", size: 11.5, color: "Warning", wrap: true);
+        note.VerticalAlignment = VerticalAlignment.Center;
+        Button fix = Ui.Button($"Make {name} act on release", () =>
+        {
+            service.SetTapOnly(bit, true);
+            shell.ShowToast($"{name} now acts when released, so it can be held for combos");
+            RenderPanel();
+        }, "GhostBtn", null, "Its action then runs when you let go, and is skipped when you hold it for a combo");
+        fix.Padding = new Thickness(8, 4, 8, 4);
+        fix.HorizontalAlignment = HorizontalAlignment.Left;
+        return new StackPanel { Margin = new Thickness(0, 8, 0, 0), Children = { note, fix.With(new Thickness(-8, 2, 0, 0)) } };
+    }
+
+    private Border RecordingBox()
+    {
+        StackPanel content = new();
+        content.Children.Add(Ui.Row(10, Ui.Glyph("", 16, "Warning"), Ui.Text("Press the buttons together on your mouse", bold: true, color: "Warning")));
+        content.Children.Add(Ui.Text("Hold them all down, then let go. Buttons do nothing while recording.", "Body", size: 12, wrap: true).With(new Thickness(26, 4, 0, 10)));
+        Button cancel = Ui.Button("Cancel", service.CancelComboRecording, "Btn");
+        cancel.HorizontalAlignment = HorizontalAlignment.Left;
+        content.Children.Add(cancel.With(new Thickness(26, 0, 0, 0)));
+        return new Border { Background = Ui.Brush("WarningDim"), CornerRadius = new CornerRadius(10), Padding = new Thickness(14), Child = content };
+    }
+
+    /// <summary>Above the action tabs while choosing a combo's action.</summary>
+    private Border ComboTargetBanner(ComboSlot combo)
+    {
+        Grid content = new();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        StackPanel text = new()
+        {
+            Children =
+            {
+                Ui.Text($"Combo {service.DescribeCombo(combo.Bits)}", bold: true, color: "Accent"),
+                Ui.Text("Click an action to run it when these buttons are pressed together.", "Body", size: 12, wrap: true)
+            }
+        };
+        content.Children.Add(text);
+        Button cancel = Ui.Button("Cancel", () =>
+        {
+            comboTarget = null;
+            tab = "Combos";
+            RenderPanel();
+        }, "GhostBtn");
+        cancel.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(cancel, 1);
+        content.Children.Add(cancel);
+        return new Border
+        {
+            Background = Ui.Brush("Surface2"), BorderBrush = Ui.Brush("Accent"), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10), Padding = new Thickness(12, 8, 6, 8), Margin = new Thickness(0, 2, 8, 10), Child = content
+        };
+    }
+
+    /// <summary>Opens the Combos tab (for --snapshot renders).</summary>
+    internal void ShowCombos()
+    {
+        comboTarget = null;
+        tab = "Combos";
+        RenderPanel();
+    }
+
+    private void StartRecording(ComboSlot? combo)
+    {
+        if (service.State != ConnectionState.Connected) { shell.ShowToast("Connect the mouse first"); return; }
+        rerecording = combo;
+        if (combo is not null) rerecordBit = SelectedBit(combo);
+        service.StartComboRecording();
+        RenderPanel();
+    }
+
+    private void OnComboRecorded(List<int>? bits)
+    {
+        ComboSlot? target = rerecording;
+        rerecording = null;
+        if (bits is null) { if (IsLoaded) RenderPanel(); return; }
+        if (target is not null)
+        {
+            // Replacing one button: the selected one gives way to the first button pressed.
+            int replacement = bits[0];
+            if (bits.Count > 1) shell.ShowToast($"Used {service.DescribeCombo([replacement])}; press just one button to replace the selected one");
+            if (replacement != rerecordBit && target.Bits.Contains(replacement))
+            {
+                shell.ShowToast($"{service.DescribeCombo([replacement])} is already in this combo");
+                RenderPanel();
+                return;
+            }
+            List<int> updated = [.. target.Bits.Select(b => b == rerecordBit ? replacement : b)];
+            if (service.HasCombo(updated, target, target.HoldAll)) { shell.ShowToast($"{service.DescribeCombo(updated)} is already a combo"); RenderPanel(); return; }
+            service.SetComboButtons(target, updated);
+            chipSelection[target.Id] = replacement;
+            RenderPanel();
+            return;
+        }
+        if (bits.Count < 2)
+        {
+            shell.ShowToast("Press at least two buttons at the same time");
+            RenderPanel();
+            return;
+        }
+        string name = service.DescribeCombo(bits);
+        if (service.HasCombo(bits))
+        {
+            shell.ShowToast($"{name} is already a combo");
+            RenderPanel();
+            return;
+        }
+        // A new combo goes straight on to choosing its action.
+        comboTarget = service.AddCombo(bits);
+        tabKey = "";
+        tab = "Commands";
+        shell.ShowToast($"Recorded {name}. Now pick its action.");
+        RenderPanel();
+    }
+
     // ── Click safety ──────────────────────────────────────────────────────────
 
     /// <summary>
@@ -703,6 +1041,20 @@ internal sealed class AssignmentsPage : UserControl, IPage
     /// </summary>
     private bool Assign(int bit, string? id)
     {
+        if (comboTarget is { } combo)
+        {
+            if (id is BuiltinActions.GShift or BuiltinActions.DpiShift)
+            {
+                shell.ShowToast("G-Shift and DPI Shift can't be used in a combo");
+                return false;
+            }
+            service.SetComboAction(combo, id);
+            shell.ShowToast($"{service.DescribeCombo(combo.Bits)} → {service.Settings.DescribeAssignment(id)}");
+            comboTarget = null;
+            tab = "Combos";
+            Refresh();
+            return false; // Handled here; the caller has nothing more to do for a button.
+        }
         bool shift = diagram.ShiftLayer;
         MouseProfile profile = service.ActiveProfile;
         string? before = (shift ? profile.ShiftAssignments : profile.Assignments).GetValueOrDefault(bit);

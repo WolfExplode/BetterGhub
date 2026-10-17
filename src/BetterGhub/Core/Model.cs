@@ -75,8 +75,29 @@ public sealed class MouseProfile
     /// <summary>HID bit (or wheel pseudo-bit) to macro id or built-in action id.</summary>
     public Dictionary<int, string> Assignments { get; set; } = [];
     public Dictionary<int, string> ShiftAssignments { get; set; } = [];
+    /// <summary>Button combinations: pressing all of a combo's buttons together runs its action.</summary>
+    public List<ComboSlot> ComboSlots { get; set; } = [];
+    /// <summary>Buttons that act when tapped (on release) rather than when pressed, so holding them for a combo doesn't also run their action.</summary>
+    public List<int> TapBits { get; set; } = [];
     [JsonIgnore] public bool IsDesktop => string.IsNullOrWhiteSpace(ApplicationPath);
     public override string ToString() => Name;
+}
+
+/// <summary>
+/// Two or more buttons pressed together. The action runs when the last of them goes down, in place of that
+/// button's own action, and is held (keys, clicks, macros) until that button is released.
+/// </summary>
+public sealed class ComboSlot
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    /// <summary>HID bits of the buttons: the last one is pressed, the others are held down first.</summary>
+    public List<int> Bits { get; set; } = [];
+    /// <summary>Every button is held together (for <see cref="Services.MouseService.ComboHoldMs"/>) instead of the last one being pressed.</summary>
+    public bool HoldAll { get; set; }
+    [JsonIgnore] public int PressBit => HoldAll || Bits.Count == 0 ? -1 : Bits[^1];
+    [JsonIgnore] public IEnumerable<int> HoldBits => HoldAll ? Bits : Bits.Take(Math.Max(0, Bits.Count - 1));
+    /// <summary>An assignment id like a button's: macro, key, launch or built-in action; empty until chosen.</summary>
+    public string Action { get; set; } = "";
 }
 
 public sealed class Settings

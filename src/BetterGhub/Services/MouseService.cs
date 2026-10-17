@@ -260,6 +260,7 @@ internal sealed class MouseService : IDisposable
         StateDetail = reason;
         BatteryPercent = null;
         BatteryCharging = false;
+        CancelComboRecording();
         ReleaseAll();
         StateChanged?.Invoke();
         NotifyIfProfileChanged();
@@ -270,6 +271,10 @@ internal sealed class MouseService : IDisposable
         DpiShiftHeld = false;
         GShiftHeld = false;
         pressedAssignments.Clear();
+        tapPending.Clear();
+        activeHoldCombos.Clear();
+        foreach (Timer timer in holdComboTimers.Values) timer.Dispose();
+        holdComboTimers.Clear();
         foreach (int bit in heldOutputs.Keys.ToArray()) ReleaseOutput(bit);
         foreach (int bit in pressed.ToArray()) { pressed.Remove(bit); ButtonChanged?.Invoke(bit, false); }
         engine.StopAll();
@@ -391,7 +396,7 @@ internal sealed class MouseService : IDisposable
             hook = new MouseHook(control =>
                 State == ConnectionState.Connected && !IsOnboard
                 && MouseControls.ById(control) is { } physical && Settings.BitFor(physical) is int bit
-                && !string.IsNullOrEmpty(EffectiveAssignment(bit)));
+                && (RecordingCombo && !physical.IsWheel || !string.IsNullOrEmpty(EffectiveAssignment(bit))));
         }
         catch (Exception error) { Write("Default-action blocking unavailable: " + error.Message); }
     }
@@ -406,7 +411,7 @@ internal sealed class MouseService : IDisposable
         }
         ButtonChanged?.Invoke(bit, true);
         ButtonChanged?.Invoke(bit, false);
-        if (IsOnboard) return; // The mouse carries out its own on-board actions.
+        if (IsOnboard || RecordingCombo) return; // The mouse carries out its own on-board actions.
         HandleAssignment(bit, true, pulse: true);
     }
 
@@ -424,6 +429,11 @@ internal sealed class MouseService : IDisposable
             return;
         }
         if (!down && swallowRelease.Remove(bit)) return;
+        if (RecordingCombo)
+        {
+            RecordComboButton(bit, down);
+            return;
+        }
         if (IsOnboard) return;
         HandleAssignment(bit, down);
     }
@@ -468,6 +478,7 @@ internal sealed class MouseService : IDisposable
     public string EffectiveAssignment(int bit)
     {
         MouseProfile profile = ActiveProfile;
+        if (ComboFor(bit) is { } combo) return combo.Action;
         return GShiftHeld && profile.ShiftAssignments.TryGetValue(bit, out string? shifted) ? shifted
             : profile.Assignments.GetValueOrDefault(bit) ?? Settings.ControlFor(bit)?.SoftwareDefault ?? "";
     }
@@ -479,6 +490,7 @@ internal sealed class MouseService : IDisposable
         {
             foreach (int bit in profile.Assignments.Where(x => x.Value == macro.Id).Select(x => x.Key).ToArray()) profile.Assignments.Remove(bit);
             foreach (int bit in profile.ShiftAssignments.Where(x => x.Value == macro.Id).Select(x => x.Key).ToArray()) profile.ShiftAssignments.Remove(bit);
+            foreach (ComboSlot combo in profile.ComboSlots.Where(c => c.Action == macro.Id)) combo.Action = "";
         }
         Settings.Macros.Remove(macro);
         Save();
@@ -498,6 +510,160 @@ internal sealed class MouseService : IDisposable
         Save();
         return true;
     }
+
+    // ── Combos ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The combo <paramref name="bit"/> completes, counting it as down: one with an action whose buttons are all
+    /// held and include it. With several, the one with the most buttons wins. Combos only run in host mode.
+    /// </summary>
+    private ComboSlot? ComboFor(int bit)
+    {
+        if (IsOnboard) return null;
+        return ActiveProfile.ComboSlots
+            .Where(c => c.Action.Length > 0 && c.Bits.Count >= 2 && c.PressBit == bit && c.HoldBits.All(pressed.Contains))
+            .MaxBy(c => c.Bits.Count);
+    }
+
+    /// <summary>Buttons whose action waits for release and is skipped when a combo used them, so they can be held for combos.</summary>
+    private readonly HashSet<int> tapPending = [];
+
+    // ── Held-together combos ──────────────────────────────────────────────────
+
+    /// <summary>How long every button of a hold-all combo must stay down before it runs.</summary>
+    public const int ComboHoldMs = 250;
+    /// <summary>Hold-all combos that have run and are waiting for a button to be released, with the key their action is held under.</summary>
+    private readonly Dictionary<ComboSlot, int> activeHoldCombos = [];
+    private readonly Dictionary<ComboSlot, Timer> holdComboTimers = [];
+    /// <summary>
+    /// Held keys, clicks and macros are tracked by trigger; a hold-all combo gets its own (above any HID bit or wheel
+    /// pseudo-bit) so it never collides with its buttons' own actions, and stays the same so Sequence macros advance.
+    /// </summary>
+    private static int HoldComboKey(ComboSlot combo) => 0x40000000 | (combo.Id.GetHashCode() & 0x3FFFFFFF);
+
+    /// <summary>Starts the hold timer of each hold-all combo whose buttons are all down.</summary>
+    private void ScheduleHoldCombos()
+    {
+        foreach (ComboSlot combo in ActiveProfile.ComboSlots)
+        {
+            if (!combo.HoldAll || combo.Action.Length == 0 || combo.Bits.Count < 2 || activeHoldCombos.ContainsKey(combo) || holdComboTimers.ContainsKey(combo)) continue;
+            if (!combo.Bits.All(pressed.Contains)) continue;
+            holdComboTimers[combo] = new Timer(_ => Post(() => ActivateHoldCombo(combo)), null, ComboHoldMs, Timeout.Infinite);
+        }
+    }
+
+    private void ActivateHoldCombo(ComboSlot combo)
+    {
+        if (holdComboTimers.Remove(combo, out Timer? timer)) timer.Dispose();
+        if (IsOnboard || RecordingCombo || !ActiveProfile.ComboSlots.Contains(combo) || !combo.Bits.All(pressed.Contains)) return;
+        // Held together: none of these buttons should also run its own action on release.
+        foreach (int bit in combo.Bits) tapPending.Remove(bit);
+        int trigger = HoldComboKey(combo);
+        activeHoldCombos[combo] = trigger;
+        RunAssignment(trigger, true, false, combo.Action);
+    }
+
+    /// <summary>Letting go of a button cancels a hold-all combo it's waiting in, or ends one that has run.</summary>
+    private void ReleaseHoldCombos(int bit)
+    {
+        foreach (ComboSlot combo in holdComboTimers.Keys.Where(c => c.Bits.Contains(bit)).ToArray())
+            if (holdComboTimers.Remove(combo, out Timer? timer)) timer.Dispose();
+        foreach ((ComboSlot combo, int trigger) in activeHoldCombos.Where(x => x.Key.Bits.Contains(bit)).ToArray())
+        {
+            activeHoldCombos.Remove(combo);
+            RunAssignment(trigger, false, false, combo.Action);
+        }
+    }
+
+    /// <summary>Whether some combo in this profile includes both buttons.</summary>
+    private bool SharesCombo(int a, int b) =>
+        ActiveProfile.ComboSlots.Any(c => c.Bits.Count >= 2 && c.Bits.Contains(a) && c.Bits.Contains(b));
+
+    public bool TapOnly(int bit) => ActiveProfile.TapBits.Contains(bit);
+
+    public void SetTapOnly(int bit, bool tap)
+    {
+        List<int> bits = ActiveProfile.TapBits;
+        if (tap == bits.Contains(bit)) return;
+        if (tap) bits.Add(bit); else bits.Remove(bit);
+        tapPending.Remove(bit);
+        Save();
+    }
+
+    /// <summary>Whether a combo with these buttons (same held set and same press button) exists, other than <paramref name="except"/>.</summary>
+    public bool HasCombo(List<int> bits, ComboSlot? except = null, bool holdAll = false) =>
+        ActiveProfile.ComboSlots.Any(c => c != except && c.HoldAll == holdAll && c.Bits.Count == bits.Count && c.PressBit == (holdAll ? -1 : bits[^1]) && c.Bits.All(bits.Contains));
+
+    /// <summary>Recording a combo: buttons are shown but do nothing, and <see cref="ComboRecorded"/> reports them once all are released.</summary>
+    public bool RecordingCombo { get; private set; }
+    /// <summary>A combo recording finished with the buttons that were held together (possibly fewer than two), or null when cancelled.</summary>
+    public event Action<List<int>?>? ComboRecorded;
+    private readonly List<int> comboRecording = [];
+
+    public void StartComboRecording()
+    {
+        ReleaseAll();
+        comboRecording.Clear();
+        RecordingCombo = true;
+        StateChanged?.Invoke();
+    }
+
+    public void CancelComboRecording()
+    {
+        if (!RecordingCombo) return;
+        RecordingCombo = false;
+        comboRecording.Clear();
+        ComboRecorded?.Invoke(null);
+        StateChanged?.Invoke();
+    }
+
+    private void RecordComboButton(int bit, bool down)
+    {
+        if (down)
+        {
+            if (!comboRecording.Contains(bit)) comboRecording.Add(bit);
+            return;
+        }
+        if (pressed.Count > 0 || comboRecording.Count == 0) return;
+        List<int> bits = [.. comboRecording];
+        comboRecording.Clear();
+        RecordingCombo = false;
+        ComboRecorded?.Invoke(bits);
+        StateChanged?.Invoke();
+    }
+
+    /// <summary>Adds an empty combo for these buttons, or returns the existing one with the same buttons.</summary>
+    public ComboSlot AddCombo(List<int> bits)
+    {
+        if (ActiveProfile.ComboSlots.FirstOrDefault(c => !c.HoldAll && c.Bits.Count == bits.Count && c.PressBit == bits[^1] && c.Bits.All(bits.Contains)) is { } existing) return existing;
+        ComboSlot combo = new() { Bits = bits };
+        ActiveProfile.ComboSlots.Add(combo);
+        Save();
+        return combo;
+    }
+
+    public void SetComboButtons(ComboSlot combo, List<int> bits, bool? holdAll = null)
+    {
+        combo.Bits = bits;
+        if (holdAll is bool all) combo.HoldAll = all;
+        Save();
+    }
+
+    public void SetComboAction(ComboSlot combo, string? id)
+    {
+        combo.Action = id ?? "";
+        Save();
+    }
+
+    public void DeleteCombo(ComboSlot combo)
+    {
+        ActiveProfile.ComboSlots.Remove(combo);
+        Save();
+    }
+
+    /// <summary>"G4 + G5" for a combo's buttons.</summary>
+    public string DescribeCombo(IEnumerable<int> bits) =>
+        string.Join(" + ", bits.Select(b => Settings.ControlFor(b) is { } c ? (c.Id.StartsWith('G') ? c.Id : c.Label) : $"0x{b:x4}"));
 
     private string? OnboardRefusal(int bit, string? id)
     {
@@ -545,6 +711,7 @@ internal sealed class MouseService : IDisposable
     private void HandleAssignment(int bit, bool down, bool pulse = false)
     {
         MouseProfile profile = ActiveProfile;
+        if (!down && !pulse) ReleaseHoldCombos(bit);
         if (profile.Assignments.GetValueOrDefault(bit) == BuiltinActions.GShift)
         {
             if (GShiftHeld == down) return;
@@ -560,6 +727,38 @@ internal sealed class MouseService : IDisposable
             assignment = pressedAssignments.GetValueOrDefault(bit) ?? EffectiveAssignment(bit);
             pressedAssignments.Remove(bit);
         }
+        if (!pulse)
+        {
+            bool partnerHeld = false;
+            if (down && !IsOnboard)
+            {
+                // A button held for a combo mustn't tap its own action on release once another button of a combo it's in has been pressed.
+                foreach (int pending in tapPending.ToArray())
+                    if (pending != bit && SharesCombo(pending, bit)) tapPending.Remove(pending);
+                partnerHeld = pressed.Any(other => other != bit && SharesCombo(other, bit));
+                ScheduleHoldCombos();
+            }
+            if (down && ComboFor(bit) is { } combo)
+            {
+                // The held buttons were used for this combo, so letting go of them mustn't also tap their own actions.
+                foreach (int held in combo.Bits) tapPending.Remove(held);
+            }
+            else if (down && TapOnly(bit))
+            {
+                if (!partnerHeld) tapPending.Add(bit); // Runs on release, unless it was pressed as part of a combo.
+                return;
+            }
+            else if (!down && tapPending.Remove(bit))
+                pulse = down = true; // Tapped: press and release its action now.
+            // Otherwise a release ends whatever the press started (nothing, for a tap-only button a combo used).
+        }
+        RunAssignment(bit, down, pulse, assignment);
+    }
+
+    /// <summary>Carries out an assignment for a button's press, release or wheel pulse.</summary>
+    private void RunAssignment(int bit, bool down, bool pulse, string assignment)
+    {
+        MouseProfile profile = ActiveProfile;
         switch (assignment)
         {
             case "" or BuiltinActions.Disabled:
