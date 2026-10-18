@@ -246,8 +246,20 @@ internal sealed class MouseService : IDisposable
 
     public void Disconnect()
     {
-        bridge.Stop();
+        bridge.Stop(ReleaseSector());
         SetDisconnected("Disconnected by you");
+    }
+
+    /// <summary>
+    /// On-board slot to leave the mouse on when BetterGhub lets go, so its buttons keep working without it:
+    /// the last one used, else the first enabled slot; 0 when there's none.
+    /// </summary>
+    private int ReleaseSector()
+    {
+        if (State != ConnectionState.Connected) return 0;
+        if (OnboardSector is int running) return running;
+        if (Settings.LastOnboardSector is int last && OnboardSlots?.Any(s => s.Sector == last && s.Enabled) != false) return last;
+        return Onboard is { Blank: false } ? OnboardSlots?.FirstOrDefault(s => s.Enabled)?.Sector ?? 0 : 0;
     }
 
     private void SetDisconnected(string reason)
@@ -357,9 +369,10 @@ internal sealed class MouseService : IDisposable
             case ModeEvent mode:
                 bool changed = OnboardSector != (mode.OnboardSector == 0 ? null : mode.OnboardSector);
                 OnboardSector = mode.OnboardSector == 0 ? null : mode.OnboardSector;
-                if (Settings.OnboardSector != OnboardSector)
+                if (Settings.OnboardSector != OnboardSector || (OnboardSector is not null && Settings.LastOnboardSector != OnboardSector))
                 {
                     Settings.OnboardSector = OnboardSector;
+                    Settings.LastOnboardSector = OnboardSector ?? Settings.LastOnboardSector;
                     try { Settings.Save(); } catch (Exception error) { Write("Could not save settings: " + error.Message); }
                 }
                 ReleaseAll();
@@ -1330,6 +1343,7 @@ internal sealed class MouseService : IDisposable
         disposed = true;
         hook?.Dispose();
         engine.Dispose();
+        bridge.Stop(ReleaseSector());
         bridge.Dispose();
         Save();
     }

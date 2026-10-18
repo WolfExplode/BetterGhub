@@ -57,9 +57,17 @@ internal sealed class HidppBridge : IDisposable
         worker.Start();
     }
 
-    public void Stop()
+    /// <summary>Stops the bridge; with a <paramref name="releaseSector"/>, first leaves the mouse running that on-board slot.</summary>
+    public void Stop(int releaseSector = 0)
     {
         if (stop is null) return;
+        if (releaseSector != 0 && current is not null)
+        {
+            using ManualResetEventSlim released = new();
+            commands.Enqueue(("release", releaseSector, released));
+            current?.Wake();
+            released.Wait(1500);
+        }
         stop.Cancel();
         current?.Dispose(); // Unblocks pending reads.
         worker?.Join(2500);
@@ -190,6 +198,11 @@ internal sealed class HidppBridge : IDisposable
                         onboardSector = command.Value;
                         ApplyMode(session, modeIndex, spyIndex);
                         Emit(new ModeEvent(onboardSector));
+                    }
+                    else if (command.Command == "release")
+                    {
+                        try { SetOnboardMode(session, modeIndex, command.Value); }
+                        finally { ((ManualResetEventSlim)command.Data!).Set(); }
                     }
                     else if (command.Command == "dpi")
                     {

@@ -113,6 +113,8 @@ public sealed class Settings
     public bool AutoSwitchProfiles { get; set; } = true;
     /// <summary>On-board slot (its sector) the mouse runs from, edited through the normal pages; null for host mode.</summary>
     public int? OnboardSector { get; set; }
+    /// <summary>On-board slot the mouse last ran from; it's handed back to this one when BetterGhub disconnects or quits.</summary>
+    public int? LastOnboardSector { get; set; }
     /// <summary>Closing the window keeps BetterGhub running in the notification area.</summary>
     public bool CloseToTray { get; set; } = true;
     public bool TrayHintShown { get; set; }
