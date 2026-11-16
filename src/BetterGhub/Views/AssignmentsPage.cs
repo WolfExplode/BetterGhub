@@ -916,11 +916,23 @@ internal sealed class AssignmentsPage : UserControl, IPage
         MenuItem press = new() { Header = "Press", IsCheckable = true, IsChecked = isPress };
         hold.Click += (_, _) =>
         {
+            if (combo.Bits.Any(b => b is Input.RawMouseWheel.Up or Input.RawMouseWheel.Down))
+            {
+                shell.ShowToast("Scroll is a pulse and must be the pressed action");
+                RenderPanel();
+                return;
+            }
             if (isPress) Apply([.. combo.Bits], holdAll: true);
             else hold.IsChecked = true;
         };
         press.Click += (_, _) =>
         {
+            if (combo.Bits.Any(b => b is Input.RawMouseWheel.Up or Input.RawMouseWheel.Down) && bit is not (Input.RawMouseWheel.Up or Input.RawMouseWheel.Down))
+            {
+                shell.ShowToast("Scroll must be the pressed action");
+                RenderPanel();
+                return;
+            }
             if (isPress) { press.IsChecked = true; return; }
             Apply([.. combo.Bits.Where(b => b != bit), bit], holdAll: false);
         };
@@ -953,7 +965,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     {
         StackPanel content = new();
         content.Children.Add(Ui.Row(10, Ui.Glyph("", 16, "Warning"), Ui.Text("Press the buttons together on your mouse", bold: true, color: "Warning")));
-        content.Children.Add(Ui.Text("Hold them all down, then let go. Buttons do nothing while recording.", "Body", size: 12, wrap: true).With(new Thickness(26, 4, 0, 10)));
+        content.Children.Add(Ui.Text("Hold the buttons, then press the last button or scroll up or down. Release the buttons to finish.", "Body", size: 12, wrap: true).With(new Thickness(26, 4, 0, 10)));
         Button cancel = Ui.Button("Cancel", service.CancelComboRecording, "Btn");
         cancel.HorizontalAlignment = HorizontalAlignment.Left;
         content.Children.Add(cancel.With(new Thickness(26, 0, 0, 0)));
@@ -1025,8 +1037,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
                 return;
             }
             List<int> updated = [.. target.Bits.Select(b => b == rerecordBit ? replacement : b)];
-            if (service.HasCombo(updated, target, target.HoldAll)) { shell.ShowToast($"{service.DescribeCombo(updated)} is already a combo"); RenderPanel(); return; }
-            service.SetComboButtons(target, updated);
+            var wheels = updated.Where(b => b is Input.RawMouseWheel.Up or Input.RawMouseWheel.Down).ToArray();
+            if (wheels.Length > 1) { shell.ShowToast("A combo can contain only one scroll direction"); RenderPanel(); return; }
+            bool holdAll = target.HoldAll;
+            if (wheels.Length == 1) { updated.Remove(wheels[0]); updated.Add(wheels[0]); holdAll = false; }
+            if (service.HasCombo(updated, target, holdAll)) { shell.ShowToast($"{service.DescribeCombo(updated)} is already a combo"); RenderPanel(); return; }
+            service.SetComboButtons(target, updated, holdAll);
             chipSelection[target.Id] = replacement;
             RenderPanel();
             return;

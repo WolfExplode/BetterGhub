@@ -424,7 +424,17 @@ internal sealed class MouseService : IDisposable
         }
         ButtonChanged?.Invoke(bit, true);
         ButtonChanged?.Invoke(bit, false);
-        if (IsOnboard || RecordingCombo) return; // The mouse carries out its own on-board actions.
+        if (IsOnboard) return;
+        if (RecordingCombo)
+        {
+            if (bit is RawMouseWheel.Up or RawMouseWheel.Down)
+            {
+                comboRecording.RemoveAll(b => b is RawMouseWheel.Up or RawMouseWheel.Down);
+                comboRecording.Add(bit);
+                if (pressed.Count == 0) FinishComboRecording();
+            }
+            return;
+        }
         HandleAssignment(bit, true, pulse: true);
     }
 
@@ -673,7 +683,14 @@ internal sealed class MouseService : IDisposable
             return;
         }
         if (pressed.Count > 0 || comboRecording.Count == 0) return;
+        FinishComboRecording();
+    }
+
+    private void FinishComboRecording()
+    {
         List<int> bits = [.. comboRecording];
+        int wheel = bits.Find(b => b is RawMouseWheel.Up or RawMouseWheel.Down);
+        if (wheel != 0) { bits.Remove(wheel); bits.Add(wheel); }
         comboRecording.Clear();
         RecordingCombo = false;
         ComboRecorded?.Invoke(bits);
@@ -768,7 +785,12 @@ internal sealed class MouseService : IDisposable
             return;
         }
         string assignment;
-        if (pulse) assignment = EffectiveAssignment(bit);
+        if (pulse)
+        {
+            assignment = EffectiveAssignment(bit);
+            if (ComboFor(bit) is { } combo)
+                foreach (int held in combo.Bits) tapPending.Remove(held);
+        }
         else if (down) pressedAssignments[bit] = assignment = EffectiveAssignment(bit);
         else
         {

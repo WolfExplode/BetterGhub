@@ -32,8 +32,22 @@ internal sealed class HidppBridge : IDisposable
         MouseControls.G304 = productId is 0xC53F or 0xC539;
     }
 
-    private static (ushort ProductId, string Mouse) FindReceiver() =>
-        Receivers.FirstOrDefault(r => HidDevice.Enumerate(VendorId, r.ProductId).Any(x => x.UsagePage == 0xFF00));
+    private static (ushort ProductId, string Mouse) FindReceiver()
+    {
+        var present = Receivers.Where(r => HidDevice.Enumerate(VendorId, r.ProductId).Any(x => x.UsagePage == 0xFF00)).ToArray();
+        foreach (var receiver in present)
+        {
+            try
+            {
+                using Session session = Session.OpenReceiver(receiver.ProductId);
+                if (session.Call(0, 0, 0x81, 0x00, 0)[0] != 0) return receiver;
+            }
+            catch (IOException) { /* Try the next receiver if its mouse is unavailable. */ }
+            catch (TimeoutException) { }
+            catch (Win32Exception) { }
+        }
+        return present.FirstOrDefault();
+    }
 
     private readonly ConcurrentQueue<(string Command, int Value, object? Data)> commands = new();
     private Thread? worker;
@@ -592,6 +606,11 @@ internal sealed class HidppBridge : IDisposable
             (ushort productId, string mouse) = FindReceiver();
             if (productId == 0) throw new ReceiverMissingException("No supported receiver found");
             MouseName = mouse;
+            return OpenReceiver(productId);
+        }
+
+        public static Session OpenReceiver(ushort productId)
+        {
             List<HidDevice.Info> vendor = HidDevice.Enumerate(VendorId, productId).Where(x => x.UsagePage == 0xFF00).ToList();
             HidDevice.Info[] shortMatches = vendor.Where(x => x.Usage == 1).ToArray();
             HidDevice.Info[] longMatches = vendor.Where(x => x.Usage == 2).ToArray();

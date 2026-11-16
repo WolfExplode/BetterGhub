@@ -29,14 +29,14 @@ Settings live in `%APPDATA%\BetterGhub\settings.json`. If that file can't be rea
 Needs the .NET 8 SDK on Windows. Open `BetterGhub.sln`, or:
 
 ```powershell
-.\build.ps1          # dist\BetterGhub.exe, portable self-contained single file (~64 MB)
-.\build.ps1 -Small   # ~2 MB, requires the .NET 8 Desktop Runtime
+.\build.cmd          # dist\BetterGhub.exe, portable self-contained single file (~64 MB)
+.\build.cmd -Small   # ~2 MB, requires the .NET 8 Desktop Runtime
 dotnet run --project src\BetterGhub
 ```
 
 ```
 BetterGhub.sln
-build.ps1                 publishes dist\BetterGhub.exe
+build.cmd / build.ps1     publish dist\BetterGhub.exe
 src/BetterGhub/           the app
   Core/                   settings model, physical control catalog, macro engine
   Device/                 native HID++ 2.0 over Win32 HID (0x8100 host mode, 0x8110 button spy, 0x2201 DPI, 0x8060 report rate)
@@ -66,3 +66,4 @@ Command-line switches:
 - The exe is not code-signed, so Windows SmartScreen may warn on first run ("More info → Run anyway").
 - The Logitech logo is a Logitech trademark. Fine for personal use; replace it before publishing the app.
 - Lighting, onboard memory, cloud profiles, integrations and firmware updates are out of scope.
+
