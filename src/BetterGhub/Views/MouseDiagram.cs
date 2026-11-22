@@ -34,6 +34,7 @@ internal sealed class MouseDiagram : Viewbox
     public event Action<MouseControl, string>? ActionRemoved;
     /// <summary>"Reset to default" was chosen from a control's right-click menu.</summary>
     public event Action<MouseControl>? ResetRequested;
+    public event Action<MouseControl>? InheritRequested;
     /// <summary>"Activate on press / release" was chosen from a control's right-click menu (true: on release).</summary>
     public event Action<MouseControl, bool>? ActivationRequested;
 
@@ -147,7 +148,7 @@ internal sealed class MouseDiagram : Viewbox
             Settings settings = owner.service.Settings;
             int? bit = settings.BitFor(control);
             MouseProfile profile = owner.service.ActiveProfile;
-            string? assigned = bit is int b ? (owner.ShiftLayer ? profile.ShiftAssignments : profile.Assignments).GetValueOrDefault(b) : null;
+            string? assigned = bit is int b ? profile.Binding(owner.ShiftLayer, b) : null;
             bool isMacro = settings.IsMacro(assigned);
             bool calibrated = bit is not null;
             bool left = control.Side == CalloutSide.Left;
@@ -253,6 +254,17 @@ internal sealed class MouseDiagram : Viewbox
                 menu.Items.Add(new Separator());
             }
             menu.Items.Add(reset);
+            MouseProfile profile = owner.service.ActiveProfile;
+            if (profile.Parent is not null && owner.service.Settings.BitFor(control) is int inheritedBit)
+            {
+                MenuItem inherit = new()
+                {
+                    Header = "Use parent assignment",
+                    IsEnabled = profile.LocalBindings(owner.ShiftLayer).ContainsKey(inheritedBit)
+                };
+                inherit.Click += (_, _) => owner.InheritRequested?.Invoke(control);
+                menu.Items.Add(inherit);
+            }
             if (owner.service.Settings.BitFor(control) is int bit && !control.IsWheel && !owner.service.IsOnboard && !owner.ShiftLayer)
             {
                 bool tap = owner.service.TapOnly(bit);

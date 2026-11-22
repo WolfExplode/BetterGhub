@@ -253,11 +253,11 @@ internal sealed class MacrosPage : UserControl, IPage
         List<string> uses = [];
         void Add(MouseProfile profile, bool named)
         {
-            foreach ((int bit, string id) in profile.Assignments.Where(x => Assignments.Has(x.Value, item.Id)))
+            foreach ((int bit, string id) in profile.Bindings(false).Where(x => Assignments.Has(x.Value, item.Id)))
                 uses.Add(ControlName(bit) + (named ? $" · {profile.Name}" : ""));
-            foreach ((int bit, string id) in profile.ShiftAssignments.Where(x => Assignments.Has(x.Value, item.Id)))
+            foreach ((int bit, string id) in profile.Bindings(true).Where(x => Assignments.Has(x.Value, item.Id)))
                 uses.Add("G-Shift+" + ControlName(bit) + (named ? $" · {profile.Name}" : ""));
-            foreach (ComboSlot combo in profile.ComboSlots.Where(c => c.Action == item.Id))
+            foreach (ComboSlot combo in profile.Combos.Where(c => c.Action == item.Id))
                 uses.Add(string.Join("+", combo.Bits.Select(ControlName)) + (named ? $" · {profile.Name}" : ""));
         }
         foreach (MouseProfile profile in service.Settings.Profiles) Add(profile, service.Settings.Profiles.Count > 1);

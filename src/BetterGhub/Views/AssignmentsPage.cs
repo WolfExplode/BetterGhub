@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using BetterGhub.Core;
 using BetterGhub.Input;
 using BetterGhub.Services;
@@ -13,6 +15,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private readonly MainWindow shell;
     private readonly MouseDiagram diagram;
     private readonly StackPanel panel = new();
+    private readonly ScrollViewer panelScroll;
     /// <summary>The picker's title, tabs and search box, kept above the scrolling list.</summary>
     private readonly StackPanel header = new();
     private readonly Border calibrationBanner = new();
@@ -33,6 +36,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private int rerecordBit;
     /// <summary>The selected button of each combo (by combo id): the one its record button replaces. Defaults to the pressed button.</summary>
     private readonly Dictionary<string, int> chipSelection = [];
+    private readonly Dictionary<int, List<Action<bool>>> comboChipsByBit = [];
+    private readonly Dictionary<int, DispatcherTimer> comboWheelFlashes = [];
     /// <summary>Scroll the list to the selected control's assignment on the next render, after picking a control.</summary>
     private bool revealCurrent;
 
@@ -45,6 +50,12 @@ internal sealed class AssignmentsPage : UserControl, IPage
         diagram.AssignmentDropped += AssignDropped;
         diagram.ActionRemoved += RemoveAction;
         diagram.ResetRequested += ResetControl;
+        diagram.InheritRequested += control =>
+        {
+            if (service.Settings.BitFor(control) is not int bit) return;
+            service.InheritAssignment(diagram.ShiftLayer, bit);
+            Refresh();
+        };
         diagram.ActivationRequested += (control, onRelease) =>
         {
             if (service.Settings.BitFor(control) is not int bit) return;
@@ -61,7 +72,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         leftContent.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         leftContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         leftContent.Children.Add(header);
-        ScrollViewer panelScroll = Ui.Scroll(panel);
+        panelScroll = Ui.Scroll(panel);
         Grid.SetRow(panelScroll, 1);
         leftContent.Children.Add(panelScroll);
         Border left = Ui.Card(leftContent, new Thickness(22, 20, 14, 20));
@@ -161,8 +172,17 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
     private void OnButton(int bit, bool down)
     {
-        if (bit >= Input.RawMouseWheel.Up) { if (down) diagram.Pulse(bit); return; }
+        if (bit >= RawMouseWheel.Up)
+        {
+            if (down)
+            {
+                diagram.Pulse(bit);
+                FlashComboWheel(bit);
+            }
+            return;
+        }
         diagram.SetPressed(bit, down);
+        SetComboChipsPressed(bit, down);
         if (down && service.Learning is null && service.Settings.ControlFor(bit) is null && IsVisible)
             shell.ShowToast(calibrating
                 ? $"Unmapped button 0x{bit:x4}. Click the control it belongs to, then press it again."
@@ -197,16 +217,14 @@ internal sealed class AssignmentsPage : UserControl, IPage
         if (id == BuiltinActions.GShift && diagram.ShiftLayer) { shell.ShowToast("G-Shift can't be assigned on the G-Shift layer"); return; }
         if (id == BuiltinActions.DpiShift && control.IsWheel) { shell.ShowToast("DPI Shift can't be assigned to the wheel"); return; }
         if (!Assign(bit, id, add)) return; // The service already explained why.
-        Dictionary<int, string> layer = diagram.ShiftLayer ? service.ActiveProfile.ShiftAssignments : service.ActiveProfile.Assignments;
-        shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(layer.GetValueOrDefault(bit) ?? id)}");
+        shell.ShowToast($"{control.Label} → {service.Settings.DescribeAssignment(service.ActiveProfile.Binding(diagram.ShiftLayer, bit) ?? id)}");
         Refresh();
     }
 
     private void RemoveAction(MouseControl control, string id)
     {
         if (service.Settings.BitFor(control) is not int bit) return;
-        Dictionary<int, string> layer = diagram.ShiftLayer ? service.ActiveProfile.ShiftAssignments : service.ActiveProfile.Assignments;
-        string? rest = Assignments.Join(Assignments.Split(layer.GetValueOrDefault(bit)).Where(a => a != id));
+        string? rest = Assignments.Join(Assignments.Split(service.ActiveProfile.Binding(diagram.ShiftLayer, bit)).Where(a => a != id));
         if (!Assign(bit, rest)) return;
         shell.ShowToast($"Removed {service.Settings.DescribeAssignment(id)} from {control.Label}");
         Refresh();
@@ -310,12 +328,13 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
     private void RenderPanel()
     {
+        comboChipsByBit.Clear();
         panel.Children.Clear();
         header.Children.Clear();
         MouseProfile profile = service.ActiveProfile;
         int? bit = service.Settings.BitFor(selected);
         // A combo picked on the Combos tab that no longer exists (undo, profile switch) stops being the target.
-        if (comboTarget is not null && (service.IsOnboard || !profile.ComboSlots.Contains(comboTarget))) comboTarget = null;
+        if (comboTarget is not null && (service.IsOnboard || !profile.Combos.Contains(comboTarget))) comboTarget = null;
         // Combos don't involve the selected control, so they work even when it isn't calibrated.
         bool comboMode = !service.IsOnboard && (comboTarget is not null || tab == "Combos");
         // Notices sit above the picker in the fixed header; without a picker they scroll with the rest.
@@ -323,7 +342,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
 
         if (diagram.ShiftLayer)
             top.Children.Add(Ui.Text(
-                profile.Assignments.ContainsValue(BuiltinActions.GShift)
+                profile.Bindings(false).ContainsValue(BuiltinActions.GShift)
                     ? "Editing the G-Shift layer. These actions apply while the G-Shift button is held."
                     : "Editing the G-Shift layer. Assign G-Shift to a button on the Default layer to use it.",
                 "Body", size: 12, color: "Accent", wrap: true).With(new Thickness(0, 0, 8, 16)));
@@ -347,7 +366,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
         // Assignment picker
         header.Children.Add(Ui.Text("ASSIGN", "Overline").With(new Thickness(0, 0, 0, 4)));
         if (comboTarget is { } chosen) header.Children.Add(ComboTargetBanner(chosen));
-        Dictionary<int, string> bindings = diagram.ShiftLayer ? profile.ShiftAssignments : profile.Assignments;
+        Dictionary<int, string> bindings = profile.Bindings(diagram.ShiftLayer);
         string current = comboTarget?.Action ?? bindings.GetValueOrDefault(target) ?? "";
         string key = comboTarget is not null ? "combo:" + comboTarget.Id : selected.Id + (diagram.ShiftLayer ? "/shift" : "");
         if (key != tabKey)
@@ -497,8 +516,8 @@ internal sealed class AssignmentsPage : UserControl, IPage
                 if (Matches("Launch Application", "application", "program"))
                 {
                     options.Children.Add(Section("Launch Application"));
-                    IEnumerable<string> launches = service.ActiveProfile.Assignments.Values
-                        .Concat(service.ActiveProfile.ShiftAssignments.Values)
+                    IEnumerable<string> launches = service.ActiveProfile.Bindings(false).Values
+                        .Concat(service.ActiveProfile.Bindings(true).Values)
                         .Append(current)
                         .Where(x => Assignments.LaunchPath(x) is not null)
                         .Distinct();
@@ -788,10 +807,135 @@ internal sealed class AssignmentsPage : UserControl, IPage
             panel.Children.Add(add.With(new Thickness(0, 0, 0, 12)));
         }
 
-        List<ComboSlot> combos = service.ActiveProfile.ComboSlots;
-        if (combos.Count == 0)
+        ComboSlot[] combos = service.ActiveProfile.CombosInDisplayOrder.ToArray();
+        if (combos.Length == 0)
             panel.Children.Add(Ui.Text("No combos yet.", "Body", size: 12, color: "Faint").With(new Thickness(2, 4, 8, 4)));
-        foreach (ComboSlot combo in combos) panel.Children.Add(ComboRow(combo));
+        else panel.Children.Add(ComboList(combos));
+    }
+
+    private Grid ComboList(ComboSlot[] combos)
+    {
+        const string dragFormat = "BetterGhub.ComboReorder";
+        const double scrollEdge = 28;
+        StackPanel list = new() { AllowDrop = true, Background = Brushes.Transparent };
+        Border marker = new()
+        {
+            Background = Ui.Brush("Accent"), Height = 2, VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false, Visibility = Visibility.Collapsed
+        };
+        Border preview = new() { Opacity = 0.85, Visibility = Visibility.Collapsed };
+        Canvas dragLayer = new() { IsHitTestVisible = false, Children = { preview } };
+        ComboSlot? dragging = null;
+        Point dragOffset = default;
+        int scrollDirection = 0;
+        DispatcherTimer scroll = new() { Interval = TimeSpan.FromMilliseconds(40) };
+        scroll.Tick += (_, _) => panelScroll.ScrollToVerticalOffset(panelScroll.VerticalOffset + 12 * scrollDirection);
+
+        foreach (ComboSlot combo in combos)
+        {
+            Border row = ComboRow(combo);
+            list.Children.Add(row);
+            if (combos.Length < 2) continue;
+            MakeComboDraggable(row, origin =>
+            {
+                dragging = combo;
+                dragOffset = origin;
+                preview.Width = row.ActualWidth;
+                preview.Height = row.ActualHeight;
+                preview.Background = new VisualBrush(row);
+                DragDropEffects result;
+                try { result = DragDrop.DoDragDrop(row, new DataObject(dragFormat, combo.Id), DragDropEffects.Move); }
+                finally
+                {
+                    dragging = null;
+                    preview.Background = null;
+                    ClearDragFeedback();
+                }
+                if (result == DragDropEffects.Move) RenderPanel();
+            });
+        }
+
+        void ClearDragFeedback()
+        {
+            scroll.Stop();
+            marker.Visibility = Visibility.Collapsed;
+            preview.Visibility = Visibility.Collapsed;
+        }
+
+        int InsertionIndex(DragEventArgs e)
+        {
+            double y = e.GetPosition(list).Y;
+            for (int i = 0; i < combos.Length; i++)
+            {
+                FrameworkElement row = (FrameworkElement)list.Children[i];
+                if (y < row.TranslatePoint(new Point(0, row.ActualHeight / 2), list).Y) return i;
+            }
+            return combos.Length;
+        }
+
+        bool IsComboDrag(DragEventArgs e) => dragging is not null && e.Data.GetDataPresent(dragFormat);
+
+        list.DragOver += (_, e) =>
+        {
+            if (!IsComboDrag(e)) return;
+            Point pointer = e.GetPosition(list);
+            Canvas.SetLeft(preview, pointer.X - dragOffset.X);
+            Canvas.SetTop(preview, pointer.Y - dragOffset.Y);
+            preview.Visibility = Visibility.Visible;
+
+            int insertion = InsertionIndex(e);
+            int from = Array.IndexOf(combos, dragging);
+            bool canMove = insertion != from && insertion != from + 1;
+            FrameworkElement anchor = (FrameworkElement)list.Children[Math.Min(insertion, combos.Length - 1)];
+            double y = anchor.TranslatePoint(new Point(0, insertion == combos.Length ? anchor.ActualHeight : 0), list).Y;
+            marker.Margin = new Thickness(0, Math.Max(0, y - 2), 8, 0);
+            marker.Visibility = canMove ? Visibility.Visible : Visibility.Collapsed;
+
+            double pointerY = e.GetPosition(panelScroll).Y;
+            scrollDirection = pointerY < scrollEdge ? -1 : pointerY > panelScroll.ViewportHeight - scrollEdge ? 1 : 0;
+            scroll.IsEnabled = scrollDirection != 0;
+            e.Effects = canMove ? DragDropEffects.Move : DragDropEffects.None;
+            e.Handled = true;
+        };
+        list.DragLeave += (_, _) => ClearDragFeedback();
+        list.Drop += (_, e) =>
+        {
+            if (!IsComboDrag(e) || dragging is not { } source) return;
+            int insertion = InsertionIndex(e);
+            bool after = insertion == combos.Length;
+            ComboSlot anchor = combos[Math.Min(insertion, combos.Length - 1)];
+            e.Effects = service.MoveCombo(source, anchor, after) ? DragDropEffects.Move : DragDropEffects.None;
+            e.Handled = true;
+        };
+        return new Grid { Children = { list, dragLayer, marker } };
+    }
+
+    private static void MakeComboDraggable(Border row, Action<Point> drag)
+    {
+        row.Cursor = Cursors.SizeAll;
+        Point? start = null;
+        row.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            // Buttons keep their own press and capture behavior. Chips and the action label still receive clicks.
+            for (Visual? hit = e.OriginalSource as Visual; hit is not null && hit != row; hit = VisualTreeHelper.GetParent(hit) as Visual)
+                if (hit is System.Windows.Controls.Primitives.ButtonBase) return;
+
+            if (Mouse.Capture(row, CaptureMode.SubTree)) start = e.GetPosition(row);
+        };
+        row.PreviewMouseLeftButtonUp += (_, _) =>
+        {
+            if (Mouse.Captured == row) row.ReleaseMouseCapture();
+        };
+        row.LostMouseCapture += (_, _) => start = null;
+        row.PreviewMouseMove += (_, e) =>
+        {
+            if (start is not Point origin || e.LeftButton != MouseButtonState.Pressed) return;
+            Vector moved = e.GetPosition(row) - origin;
+            if (Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            e.Handled = true;
+            row.ReleaseMouseCapture();
+            drag(origin);
+        };
     }
 
     private Border ComboRow(ComboSlot combo)
@@ -853,6 +997,31 @@ internal sealed class AssignmentsPage : UserControl, IPage
     private int SelectedBit(ComboSlot combo) =>
         chipSelection.TryGetValue(combo.Id, out int bit) && combo.Bits.Contains(bit) ? bit : combo.Bits.LastOrDefault();
 
+    private void SetComboChipsPressed(int bit, bool down)
+    {
+        if (comboChipsByBit.TryGetValue(bit, out List<Action<bool>>? chips))
+            foreach (Action<bool> highlight in chips) highlight(down);
+    }
+
+    private void FlashComboWheel(int bit)
+    {
+        if (!comboChipsByBit.ContainsKey(bit)) return;
+        if (!comboWheelFlashes.TryGetValue(bit, out DispatcherTimer? timer))
+        {
+            timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                comboWheelFlashes.Remove(bit);
+                SetComboChipsPressed(bit, false);
+            };
+            comboWheelFlashes.Add(bit, timer);
+        }
+        timer.Stop();
+        SetComboChipsPressed(bit, true);
+        timer.Start();
+    }
+
     /// <summary>
     /// "HOLD G6 → PRESS G5", or "HOLD G4 + HOLD G6 · 250 ms" when all are held together: a chip per button.
     /// The selected one is outlined; the record button replaces it.
@@ -866,19 +1035,23 @@ internal sealed class AssignmentsPage : UserControl, IPage
             bool isPress = bit == combo.PressBit;
             bool selectedChip = bit == SelectedBit(combo);
             if (i > 0) row.Children.Add(Ui.Text(isPress ? "→" : "+", size: 13, color: "Faint").With(new Thickness(6, 0, 6, 0)));
-            StackPanel chip = new()
-            {
-                Children =
-                {
-                    Ui.Text(isPress ? "PRESS" : "HOLD", size: 9.5, bold: true, color: selectedChip ? "Accent" : "Muted"),
-                    Ui.Text(service.DescribeCombo([bit]), size: 14, bold: true, color: "Text")
-                }
-            };
+            TextBlock role = Ui.Text(isPress ? "PRESS" : "HOLD", size: 9.5, bold: true);
+            TextBlock label = Ui.Text(service.DescribeCombo([bit]), size: 14, bold: true);
             Border box = new()
             {
-                Child = chip, Padding = new Thickness(8, 3, 8, 4), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
-                BorderBrush = Ui.Brush(selectedChip ? "Accent" : "Faint"), Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand
+                Child = new StackPanel { Children = { role, label } }, Padding = new Thickness(8, 3, 8, 4),
+                CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), Cursor = Cursors.Hand
             };
+            void Highlight(bool down)
+            {
+                box.Background = down ? Ui.Brush("Accent") : Brushes.Transparent;
+                box.BorderBrush = Ui.Brush(down || selectedChip ? "Accent" : "Faint");
+                role.Foreground = Ui.Brush(down ? "OnAccent" : selectedChip ? "Accent" : "Muted");
+                label.Foreground = Ui.Brush(down ? "OnAccent" : "Text");
+            }
+            if (!comboChipsByBit.TryGetValue(bit, out List<Action<bool>>? chips)) comboChipsByBit[bit] = chips = [];
+            chips.Add(Highlight);
+            Highlight(service.IsButtonDown(bit) || comboWheelFlashes.ContainsKey(bit));
             box.MouseLeftButtonUp += (_, _) =>
             {
                 if (SelectedBit(combo) == bit) return;
@@ -1093,15 +1266,16 @@ internal sealed class AssignmentsPage : UserControl, IPage
         }
         bool shift = diagram.ShiftLayer;
         MouseProfile profile = service.ActiveProfile;
-        string? before = (shift ? profile.ShiftAssignments : profile.Assignments).GetValueOrDefault(bit);
+        string? before = profile.Binding(shift, bit);
+        string? localBefore = profile.LocalBindings(shift).GetValueOrDefault(bit);
         if (!service.Assign(shift, bit, id, add)) return false;
         if (!shift && service.Settings.ControlFor(bit) is { Id: "G1" or "G2" } control && Clicks(control, before) && !Clicks(control, id))
             shell.ConfirmChange($"You just unassigned your {control.DefaultAction.ToLowerInvariant()}!", () =>
             {
-                if (service.ActiveProfile == profile) service.Assign(false, bit, before);
+                if (profile.Parent is null && service.ActiveProfile == profile) service.Assign(false, bit, before);
                 else
                 {
-                    if (before is null) profile.Assignments.Remove(bit); else profile.Assignments[bit] = before;
+                    if (localBefore is null) profile.Assignments.Remove(bit); else profile.Assignments[bit] = localBefore;
                     service.Save();
                 }
             });

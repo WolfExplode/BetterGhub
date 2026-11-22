@@ -40,9 +40,9 @@ internal sealed class SensitivityPage : UserControl, IPage
         {
             MouseProfile profile = service.ActiveProfile;
             bool currentChanged = profile.Dpi != current;
-            profile.DpiStages = stages;
-            profile.Dpi = current;
-            profile.ShiftDpi = shift;
+            if (!profile.DpiStages.SequenceEqual(stages)) profile.DpiStages = [.. stages];
+            if (currentChanged) profile.Dpi = current;
+            if (profile.ShiftDpi != shift) profile.ShiftDpi = shift;
             service.Save();
             // On-board, Save snaps DPI Shift and the current speed onto the speed list; show where they landed.
             if (profile.ShiftDpi != shift || profile.Dpi != current) track.Set(profile.DpiStages, profile.Dpi, profile.ShiftDpi);
@@ -115,8 +115,9 @@ internal sealed class SensitivityPage : UserControl, IPage
         value = Math.Clamp(value / DpiTrack.Step * DpiTrack.Step, DpiTrack.Min, DpiTrack.Max);
         int old = profile.DpiStages[index];
         if (old == value) return;
-        profile.DpiStages[index] = value;
-        profile.DpiStages = profile.DpiStages.Distinct().Order().ToList();
+        List<int> stages = [.. profile.DpiStages];
+        stages[index] = value;
+        profile.DpiStages = stages.Distinct().Order().ToList();
         if (profile.Dpi == old) { profile.Dpi = value; service.SendDpi(value); }
         service.Save();
         track.Set(profile.DpiStages, profile.Dpi, profile.ShiftDpi);
@@ -131,8 +132,7 @@ internal sealed class SensitivityPage : UserControl, IPage
         if (profile.DpiStages.Count >= 5) return;
         int candidate = Math.Min(DpiTrack.Max, (profile.DpiStages.Count == 0 ? 800 : profile.DpiStages.Max() * 2));
         while (profile.DpiStages.Contains(candidate) && candidate > DpiTrack.Min) candidate -= 100;
-        profile.DpiStages.Add(candidate);
-        profile.DpiStages.Sort();
+        profile.DpiStages = profile.DpiStages.Append(candidate).Order().ToList();
         service.Save();
         track.Set(profile.DpiStages, profile.Dpi, profile.ShiftDpi);
         track.Select(profile.DpiStages.IndexOf(candidate));
@@ -143,9 +143,11 @@ internal sealed class SensitivityPage : UserControl, IPage
     private void RemoveStage(int index)
     {
         MouseProfile profile = service.ActiveProfile;
-        if (profile.DpiStages.Count <= 1) return;
+        if (profile.DpiStages.Count <= 1 || index >= profile.DpiStages.Count) return;
         int removed = profile.DpiStages[index];
-        profile.DpiStages.RemoveAt(index);
+        List<int> stages = [.. profile.DpiStages];
+        stages.RemoveAt(index);
+        profile.DpiStages = stages;
         if (profile.Dpi == removed)
         {
             profile.Dpi = profile.DpiStages.MinBy(x => Math.Abs(x - removed));

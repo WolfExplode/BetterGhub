@@ -50,7 +50,8 @@ internal sealed class ProfilesPage : UserControl, IPage
         ("What a profile keeps", "Each profile keeps its own assignments, DPI speeds and report rate. Macros are shared, so any profile can use them."),
         ("Application profiles", "Add an application to get a profile that switches on automatically while that app has focus. Use the picker button beside it to choose an app by clicking its window."),
         ("Desktop profile", "Used whenever no application profile matches the focused window."),
-        ("Copy settings", "Use Copy settings from… to start a profile from another one's assignments and speeds."),
+        ("Linked profiles", "Link a profile to a parent to inherit its settings. Edits in the child override those settings locally."),
+        ("Copy settings", "Use Copy settings from… to make an independent copy of another profile's current settings."),
         ("Use now", "Switches to a profile immediately, regardless of the focused window."),
     ];
 
@@ -58,7 +59,7 @@ internal sealed class ProfilesPage : UserControl, IPage
     {
         autoSwitch.IsChecked = service.Settings.AutoSwitchProfiles;
         if (selected is null || !service.Settings.Profiles.Contains(selected))
-            selected = service.Settings.Profiles.FirstOrDefault(p => p.Id == selected?.Id) ?? service.ActiveProfile; // Undo puts back copies.
+            selected = service.Settings.Profiles.FirstOrDefault(p => p.Id == selected?.Id) ?? service.Settings.ActiveProfile; // Undo puts back copies.
         tiles.Children.Clear();
         foreach (MouseProfile profile in service.Settings.Profiles) tiles.Children.Add(Tile(profile));
         tiles.Children.Add(AddTile());
@@ -168,7 +169,9 @@ internal sealed class ProfilesPage : UserControl, IPage
         TextBox name = new() { Text = profile.Name, Style = Ui.Style("TitleBox"), FontSize = 20, Margin = new Thickness(-6, 0, 16, 0) };
         name.LostFocus += (_, _) =>
         {
-            profile.Name = name.Text.Trim().Length == 0 ? profile.Name : name.Text.Trim();
+            string updated = name.Text.Trim();
+            if (updated.Length == 0 || updated == profile.Name) return;
+            profile.Name = updated;
             service.Save();
             Refresh();
         };
@@ -178,7 +181,30 @@ internal sealed class ProfilesPage : UserControl, IPage
             ? "Used whenever no application profile matches the focused window."
             : $"Active while {profile.ApplicationPath} has focus.", "Body").With(new Thickness(0, 4, 0, 18)));
 
-        int assigned = profile.Assignments.Count + profile.ShiftAssignments.Count + profile.ComboSlots.Count(c => c.Action.Length > 0);
+        WrapPanel inheritance = new() { Margin = new Thickness(0, 0, 0, 18) };
+        inheritance.Children.Add(ProfileMenu(profile.Parent is null ? "Link to parent…" : "Change parent…",
+            profile.Parent is null ? "Start with the parent's settings. Changes you make afterward stay in this profile."
+                : "Keep this profile's overrides and inherit the rest from a different parent.",
+            service.Settings.Profiles.Where(p => p != profile.Parent && MouseService.CanLinkProfile(profile, p)),
+            parent => { service.LinkProfile(profile, parent); Refresh(); }));
+        if (profile.Parent is { } parent)
+        {
+            inheritance.Children.Add(Ui.Text($"Inherits from {parent.Name}", "Body").With(new Thickness(12, 8, 0, 0)));
+            inheritance.Children.Add(Ui.Button("Reset overrides", () =>
+            {
+                profile.ClearOverrides();
+                service.SaveProfileSettings(profile);
+                Refresh();
+            }, "GhostBtn", null, "Use the parent's settings for every setting in this profile.").With(new Thickness(8, 0, 0, 0)));
+            inheritance.Children.Add(Ui.Button("Unlink", () =>
+            {
+                service.UnlinkProfile(profile);
+                Refresh();
+            }, "GhostBtn", null, "Remove the link and keep the settings this profile currently uses."));
+        }
+        body.Children.Add(inheritance);
+
+        int assigned = profile.Bindings(false).Count + profile.Bindings(true).Count + profile.Combos.Count(c => c.Action.Length > 0);
         WrapPanel facts = new();
         facts.Children.Add(Fact("ASSIGNMENTS", assigned == 0 ? "None" : $"{assigned} button{(assigned == 1 ? "" : "s")}"));
         facts.Children.Add(Fact("DPI SPEEDS", string.Join(" · ", profile.DpiStages)));
@@ -191,28 +217,27 @@ internal sealed class ProfilesPage : UserControl, IPage
     private static FrameworkElement Fact(string title, string value) =>
         new StackPanel { Margin = new Thickness(0, 0, 40, 6), Children = { Ui.Text(title, "Overline"), Ui.Text(value, size: 15, bold: true, color: "Text") } };
 
-    private Button CopyFromButton(MouseProfile target)
+    private Button CopyFromButton(MouseProfile target) =>
+        ProfileMenu("Copy settings from…", "Replace this profile's settings with an independent copy.",
+            service.Settings.Profiles.Where(p => p != target), source =>
+            {
+                target.CopySettingsFrom(source);
+                service.SaveProfileSettings(target);
+                ((MainWindow)Window.GetWindow(this)).ShowToast($"Copied {source.Name} into {target.Name}");
+                Refresh();
+            }, "");
+
+    private static Button ProfileMenu(string label, string tooltip, IEnumerable<MouseProfile> options, Action<MouseProfile> choose, string? icon = null)
     {
-        Button button = Ui.Button("Copy settings from…", () => { }, "Btn", "");
+        Button button = Ui.Button(label, () => { }, "Btn", icon, tooltip);
         Popup popup = new() { PlacementTarget = button, Placement = PlacementMode.Bottom, VerticalOffset = 6, StaysOpen = false, AllowsTransparency = true };
         StackPanel items = new();
-        foreach (MouseProfile source in service.Settings.Profiles.Where(p => p != target))
+        foreach (MouseProfile source in options)
         {
             Button item = Ui.Button(source.Name, () =>
             {
                 popup.IsOpen = false;
-                target.Assignments = new Dictionary<int, string>(source.Assignments);
-                target.ShiftAssignments = new Dictionary<int, string>(source.ShiftAssignments);
-                target.ComboSlots = [.. source.ComboSlots.Select(c => new ComboSlot { Bits = [.. c.Bits], Action = c.Action, HoldAll = c.HoldAll })];
-                target.TapBits = [.. source.TapBits];
-                target.DpiStages = [.. source.DpiStages];
-                target.Dpi = source.Dpi;
-                target.ShiftDpi = source.ShiftDpi;
-                target.ReportRate = source.ReportRate;
-                service.Save();
-                if (target == service.ActiveProfile) service.ApplyDeviceSettings();
-                ((MainWindow)Window.GetWindow(this)).ShowToast($"Copied {source.Name} into {target.Name}");
-                Refresh();
+                choose(source);
             }, "GhostBtn");
             item.HorizontalContentAlignment = HorizontalAlignment.Left;
             items.Children.Add(item);
@@ -225,10 +250,7 @@ internal sealed class ProfilesPage : UserControl, IPage
 
     private void Remove(MouseProfile profile)
     {
-        bool wasActive = profile == service.ActiveProfile;
-        service.Settings.Profiles.Remove(profile);
-        if (wasActive) service.SelectProfile(service.Settings.Profiles.FirstOrDefault(p => p.IsDesktop) ?? service.Settings.Profiles[0]);
-        service.Save();
+        service.RemoveProfile(profile);
         selected = null;
         Refresh();
     }

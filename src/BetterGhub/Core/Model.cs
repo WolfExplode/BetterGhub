@@ -65,20 +65,158 @@ public sealed class MacroDefinition
 
 public sealed class MouseProfile
 {
+    private readonly List<int> defaultDpiStages = [200, 800, 1600, 3000, 6400];
+
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Default";
     public string ApplicationPath { get; set; } = "";
-    public int Dpi { get; set; } = 1600;
-    public List<int> DpiStages { get; set; } = [200, 800, 1600, 3000, 6400];
-    public int ShiftDpi { get; set; } = 100;
-    public int ReportRate { get; set; } = 1000;
-    /// <summary>HID bit (or wheel pseudo-bit) to macro id or built-in action id.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentId { get; set; }
+    [JsonIgnore] public MouseProfile? Parent { get; private set; }
+
+    [JsonPropertyName("Dpi"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LocalDpi { get; set; }
+    [JsonPropertyName("DpiStages"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? LocalDpiStages { get; set; }
+    [JsonPropertyName("ShiftDpi"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LocalShiftDpi { get; set; }
+    [JsonPropertyName("ReportRate"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LocalReportRate { get; set; }
+    [JsonIgnore] public int Dpi { get => LocalDpi ?? Parent?.Dpi ?? 1600; set => LocalDpi = value; }
+    [JsonIgnore] public List<int> DpiStages { get => LocalDpiStages ?? Parent?.DpiStages ?? defaultDpiStages; set => LocalDpiStages = value; }
+    [JsonIgnore] public int ShiftDpi { get => LocalShiftDpi ?? Parent?.ShiftDpi ?? 100; set => LocalShiftDpi = value; }
+    [JsonIgnore] public int ReportRate { get => LocalReportRate ?? Parent?.ReportRate ?? 1000; set => LocalReportRate = value; }
+
+    /// <summary>Local bindings by HID bit. An empty value in a child masks the inherited binding.</summary>
     public Dictionary<int, string> Assignments { get; set; } = [];
     public Dictionary<int, string> ShiftAssignments { get; set; } = [];
-    /// <summary>Button combinations: pressing all of a combo's buttons together runs its action.</summary>
     public List<ComboSlot> ComboSlots { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? RemovedCombos { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? ComboOrder { get; set; }
     /// <summary>Buttons that act when tapped (on release) rather than when pressed, so holding them for a combo doesn't also run their action.</summary>
     public List<int> TapBits { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? PressBits { get; set; }
+
+    [JsonIgnore] public IEnumerable<ComboSlot> Combos => Parent is null ? ComboSlots : MergeCombos(Parent.Combos);
+    [JsonIgnore] public IEnumerable<ComboSlot> CombosInDisplayOrder
+    {
+        get
+        {
+            IEnumerable<ComboSlot> ordered = Parent is null
+                ? ComboSlots.OrderBy(combo => combo.DisplayOrder ?? int.MaxValue)
+                : MergeCombos(Parent.CombosInDisplayOrder);
+            if (ComboOrder is not { } order) return ordered;
+            return ordered.OrderBy(combo => order.IndexOf(combo.Id) is int index && index >= 0 ? index : int.MaxValue);
+        }
+    }
+
+    private IEnumerable<ComboSlot> MergeCombos(IEnumerable<ComboSlot> inherited)
+    {
+        HashSet<string> inheritedIds = [];
+        foreach (ComboSlot combo in inherited)
+        {
+            inheritedIds.Add(combo.Id);
+            if (RemovedCombos?.Contains(combo.Id) != true)
+                yield return ComboSlots.Find(local => local.Id == combo.Id) ?? combo;
+        }
+        foreach (ComboSlot combo in ComboSlots)
+            if (!inheritedIds.Contains(combo.Id)) yield return combo;
+    }
+
+    internal ComboSlot EditCombo(ComboSlot combo)
+    {
+        if (ComboSlots.Find(local => local.Id == combo.Id) is { } local) return local;
+        local = combo.Clone();
+        ComboSlots.Add(local);
+        return local;
+    }
+
+    internal void RemoveCombo(ComboSlot combo)
+    {
+        ComboSlots.RemoveAll(local => local.Id == combo.Id);
+        ComboOrder?.Remove(combo.Id);
+        if (Parent?.Combos.Any(inherited => inherited.Id == combo.Id) == true)
+            (RemovedCombos ??= []).Add(combo.Id);
+    }
+
+    internal Dictionary<int, string> LocalBindings(bool shift) => shift ? ShiftAssignments : Assignments;
+
+    internal string? Binding(bool shift, int bit)
+    {
+        if (!LocalBindings(shift).TryGetValue(bit, out string? local)) return Parent?.Binding(shift, bit);
+        return Parent is not null && local.Length == 0 ? null : local;
+    }
+
+    internal Dictionary<int, string> Bindings(bool shift)
+    {
+        Dictionary<int, string> local = LocalBindings(shift);
+        if (Parent is null) return new(local);
+        Dictionary<int, string> effective = Parent.Bindings(shift);
+        foreach ((int bit, string action) in local)
+            if (action.Length == 0) effective.Remove(bit); else effective[bit] = action;
+        return effective;
+    }
+
+    internal bool IsTap(int bit) => TapBits.Contains(bit) || (PressBits?.Contains(bit) != true && Parent?.IsTap(bit) == true);
+
+    internal void SetTap(int bit, bool tap)
+    {
+        if (tap)
+        {
+            PressBits?.Remove(bit);
+            TapBits.Add(bit);
+        }
+        else
+        {
+            TapBits.Remove(bit);
+            if (Parent is not null) (PressBits ??= []).Add(bit);
+        }
+    }
+
+    private IEnumerable<int> EffectiveTapBits() => Parent is null
+        ? TapBits
+        : Parent.EffectiveTapBits().Where(bit => PressBits?.Contains(bit) != true).Union(TapBits);
+
+    internal void SetParent(MouseProfile? parent)
+    {
+        Parent = parent;
+        ParentId = parent?.Id;
+    }
+
+    internal void ClearOverrides()
+    {
+        LocalDpi = LocalShiftDpi = LocalReportRate = null;
+        LocalDpiStages = null;
+        Assignments.Clear();
+        ShiftAssignments.Clear();
+        ComboSlots.Clear();
+        TapBits.Clear();
+        RemovedCombos = ComboOrder = null;
+        PressBits = null;
+    }
+
+    /// <summary>Copies the effective settings and makes this profile independent.</summary>
+    internal void CopySettingsFrom(MouseProfile source)
+    {
+        Assignments = source.Bindings(false);
+        ShiftAssignments = source.Bindings(true);
+        List<ComboSlot> displayOrder = [.. source.CombosInDisplayOrder];
+        ComboSlots = [.. source.Combos.Select(combo => combo.Clone())];
+        foreach (ComboSlot combo in ComboSlots)
+            combo.DisplayOrder = displayOrder.FindIndex(item => item.Id == combo.Id);
+        TapBits = [.. source.EffectiveTapBits()];
+        Dpi = source.Dpi;
+        DpiStages = [.. source.DpiStages];
+        ShiftDpi = source.ShiftDpi;
+        ReportRate = source.ReportRate;
+        SetParent(null);
+        RemovedCombos = ComboOrder = null;
+        PressBits = null;
+    }
+
     [JsonIgnore] public bool IsDesktop => string.IsNullOrWhiteSpace(ApplicationPath);
     public override string ToString() => Name;
 }
@@ -90,6 +228,9 @@ public sealed class MouseProfile
 public sealed class ComboSlot
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    /// <summary>Position in the editor. Unordered combos appear last, in their original order.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? DisplayOrder { get; set; }
     /// <summary>HID bits of the buttons: the last one is pressed, the others are held down first.</summary>
     public List<int> Bits { get; set; } = [];
     /// <summary>Every button is held together (for <see cref="Services.MouseService.ComboHoldMs"/>) instead of the last one being pressed.</summary>
@@ -98,6 +239,8 @@ public sealed class ComboSlot
     [JsonIgnore] public IEnumerable<int> HoldBits => HoldAll ? Bits : Bits.Take(Math.Max(0, Bits.Count - 1));
     /// <summary>An assignment id like a button's: macro, key, launch or built-in action; empty until chosen.</summary>
     public string Action { get; set; } = "";
+
+    internal ComboSlot Clone() => new() { Id = Id, DisplayOrder = DisplayOrder, Bits = [.. Bits], HoldAll = HoldAll, Action = Action };
 }
 
 public sealed class Settings
@@ -200,8 +343,29 @@ public sealed class Settings
         ButtonNames = null;
         foreach (MouseProfile profile in Profiles)
         {
-            profile.DpiStages = profile.DpiStages.Where(x => x is >= 100 and <= 25600).Distinct().Order().ToList();
-            if (profile.DpiStages.Count == 0) profile.DpiStages.Add(Math.Clamp(profile.Dpi, 100, 25600));
+            if (profile.LocalDpiStages is not { } stages) continue;
+            profile.DpiStages = stages.Where(x => x is >= 100 and <= 25600).Distinct().Order().ToList();
+        }
+        RestoreProfileLinks();
+        foreach (MouseProfile profile in Profiles.Where(p => p.LocalDpiStages is { Count: 0 }))
+            profile.DpiStages = [Math.Clamp(profile.Dpi, 100, 25600)];
+    }
+
+    internal void RestoreProfileLinks()
+    {
+        Dictionary<string, MouseProfile> byId = [];
+        foreach (MouseProfile profile in Profiles) byId.TryAdd(profile.Id, profile);
+        foreach (MouseProfile profile in Profiles)
+        {
+            MouseProfile? parent = profile.ParentId is { } id ? byId.GetValueOrDefault(id) : null;
+            HashSet<MouseProfile> visited = [profile];
+            for (MouseProfile? ancestor = parent; ancestor is not null; ancestor = ancestor.ParentId is { } next ? byId.GetValueOrDefault(next) : null)
+            {
+                if (visited.Add(ancestor)) continue;
+                parent = null;
+                break;
+            }
+            profile.SetParent(parent);
         }
     }
 

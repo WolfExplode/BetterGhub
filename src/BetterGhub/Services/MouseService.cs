@@ -81,6 +81,7 @@ internal sealed class MouseService : IDisposable
     /// <summary>Connection, DPI, profile or layer changed.</summary>
     public event Action? StateChanged;
     public event Action<int, bool>? ButtonChanged;
+    public bool IsButtonDown(int bit) => pressed.Contains(bit);
     public event Action<LogEntry>? Logged;
     /// <summary>Settings changed outside the page being edited (profile switch, DPI button, calibration).</summary>
     public event Action? SettingsChanged;
@@ -158,6 +159,7 @@ internal sealed class MouseService : IDisposable
         ReleaseAll();
         engine.ResetSequences();
         Settings.Profiles = state.Profiles;
+        Settings.RestoreProfileLinks();
         Settings.Macros = state.Macros;
         Settings.ControlBits = state.ControlBits;
         Settings.AutoConnect = state.AutoConnect;
@@ -502,8 +504,8 @@ internal sealed class MouseService : IDisposable
     {
         MouseProfile profile = ActiveProfile;
         if (ComboFor(bit) is { } combo) return combo.Action;
-        return GShiftHeld && profile.ShiftAssignments.TryGetValue(bit, out string? shifted) ? shifted
-            : profile.Assignments.GetValueOrDefault(bit) ?? Settings.ControlFor(bit)?.SoftwareDefault ?? "";
+        return (GShiftHeld ? profile.Binding(true, bit) : null)
+            ?? profile.Binding(false, bit) ?? Settings.ControlFor(bit)?.SoftwareDefault ?? "";
     }
 
     /// <summary>Deletes a macro and clears every button, in every profile and layer, that was assigned to it.</summary>
@@ -515,7 +517,7 @@ internal sealed class MouseService : IDisposable
                 foreach (int bit in layer.Where(x => Assignments.Has(x.Value, macro.Id)).Select(x => x.Key).ToArray())
                 {
                     string? rest = Assignments.Join(Assignments.Split(layer[bit]).Where(a => a != macro.Id));
-                    if (rest is null) layer.Remove(bit); else layer[bit] = rest;
+                    if (rest is null && profile.Parent is null) layer.Remove(bit); else layer[bit] = rest ?? "";
                 }
             foreach (ComboSlot combo in profile.ComboSlots.Where(c => c.Action == macro.Id)) combo.Action = "";
         }
@@ -526,12 +528,13 @@ internal sealed class MouseService : IDisposable
     /// <summary>Assigns an action; false (with a <see cref="Notice"/>) when the on-board slot can't store it.</summary>
     public bool Assign(bool shiftLayer, int bit, string? id, bool add = false)
     {
-        Dictionary<int, string> layer = shiftLayer ? ActiveProfile.ShiftAssignments : ActiveProfile.Assignments;
+        MouseProfile profile = ActiveProfile;
+        Dictionary<int, string> layer = profile.LocalBindings(shiftLayer);
         if (add && !string.IsNullOrEmpty(id))
         {
             // Added alongside what the button already does, which includes its default (e.g. Middle click).
             MouseControl? control = Settings.ControlFor(bit);
-            string? existing = layer.GetValueOrDefault(bit);
+            string? existing = profile.Binding(shiftLayer, bit);
             if (existing is null && !shiftLayer && control is not null)
                 existing = control.SoftwareDefault
                     ?? BuiltinActions.All.FirstOrDefault(a => a.Name.Equals(control.DefaultAction, StringComparison.OrdinalIgnoreCase)).Id;
@@ -563,10 +566,16 @@ internal sealed class MouseService : IDisposable
             Notice?.Invoke(refusal);
             return false;
         }
-        Dictionary<int, string> bindings = layer;
-        if (string.IsNullOrEmpty(id)) bindings.Remove(bit); else bindings[bit] = id;
+        if (string.IsNullOrEmpty(id) && profile.Parent is null) layer.Remove(bit); else layer[bit] = id ?? "";
         Save();
         return true;
+    }
+
+    public void InheritAssignment(bool shiftLayer, int bit)
+    {
+        if (ActiveProfile.Parent is null) return;
+        ActiveProfile.LocalBindings(shiftLayer).Remove(bit);
+        Save();
     }
 
     // ── Combos ────────────────────────────────────────────────────────────────
@@ -578,7 +587,7 @@ internal sealed class MouseService : IDisposable
     private ComboSlot? ComboFor(int bit)
     {
         if (IsOnboard) return null;
-        return ActiveProfile.ComboSlots
+        return ActiveProfile.Combos
             .Where(c => c.Action.Length > 0 && c.Bits.Count >= 2 && c.PressBit == bit && c.HoldBits.All(pressed.Contains))
             .MaxBy(c => c.Bits.Count);
     }
@@ -602,7 +611,7 @@ internal sealed class MouseService : IDisposable
     /// <summary>Starts the hold timer of each hold-all combo whose buttons are all down.</summary>
     private void ScheduleHoldCombos()
     {
-        foreach (ComboSlot combo in ActiveProfile.ComboSlots)
+        foreach (ComboSlot combo in ActiveProfile.Combos)
         {
             if (!combo.HoldAll || combo.Action.Length == 0 || combo.Bits.Count < 2 || activeHoldCombos.ContainsKey(combo) || holdComboTimers.ContainsKey(combo)) continue;
             if (!combo.Bits.All(pressed.Contains)) continue;
@@ -613,7 +622,7 @@ internal sealed class MouseService : IDisposable
     private void ActivateHoldCombo(ComboSlot combo)
     {
         if (holdComboTimers.Remove(combo, out Timer? timer)) timer.Dispose();
-        if (IsOnboard || RecordingCombo || !ActiveProfile.ComboSlots.Contains(combo) || !combo.Bits.All(pressed.Contains)) return;
+        if (IsOnboard || RecordingCombo || !ActiveProfile.Combos.Contains(combo) || !combo.Bits.All(pressed.Contains)) return;
         // Held together: none of these buttons should also run its own action on release.
         foreach (int bit in combo.Bits) tapPending.Remove(bit);
         int trigger = HoldComboKey(combo);
@@ -635,22 +644,21 @@ internal sealed class MouseService : IDisposable
 
     /// <summary>Whether some combo in this profile includes both buttons.</summary>
     private bool SharesCombo(int a, int b) =>
-        ActiveProfile.ComboSlots.Any(c => c.Bits.Count >= 2 && c.Bits.Contains(a) && c.Bits.Contains(b));
+        ActiveProfile.Combos.Any(c => c.Bits.Count >= 2 && c.Bits.Contains(a) && c.Bits.Contains(b));
 
-    public bool TapOnly(int bit) => ActiveProfile.TapBits.Contains(bit);
+    public bool TapOnly(int bit) => ActiveProfile.IsTap(bit);
 
     public void SetTapOnly(int bit, bool tap)
     {
-        List<int> bits = ActiveProfile.TapBits;
-        if (tap == bits.Contains(bit)) return;
-        if (tap) bits.Add(bit); else bits.Remove(bit);
+        if (tap == TapOnly(bit)) return;
+        ActiveProfile.SetTap(bit, tap);
         tapPending.Remove(bit);
         Save();
     }
 
     /// <summary>Whether a combo with these buttons (same held set and same press button) exists, other than <paramref name="except"/>.</summary>
     public bool HasCombo(List<int> bits, ComboSlot? except = null, bool holdAll = false) =>
-        ActiveProfile.ComboSlots.Any(c => c != except && c.HoldAll == holdAll && c.Bits.Count == bits.Count && c.PressBit == (holdAll ? -1 : bits[^1]) && c.Bits.All(bits.Contains));
+        ActiveProfile.Combos.Any(c => c != except && c.HoldAll == holdAll && c.Bits.Count == bits.Count && c.PressBit == (holdAll ? -1 : bits[^1]) && c.Bits.All(bits.Contains));
 
     /// <summary>Recording a combo: buttons are shown but do nothing, and <see cref="ComboRecorded"/> reports them once all are released.</summary>
     public bool RecordingCombo { get; private set; }
@@ -700,7 +708,7 @@ internal sealed class MouseService : IDisposable
     /// <summary>Adds an empty combo for these buttons, or returns the existing one with the same buttons.</summary>
     public ComboSlot AddCombo(List<int> bits)
     {
-        if (ActiveProfile.ComboSlots.FirstOrDefault(c => !c.HoldAll && c.Bits.Count == bits.Count && c.PressBit == bits[^1] && c.Bits.All(bits.Contains)) is { } existing) return existing;
+        if (ActiveProfile.Combos.FirstOrDefault(c => !c.HoldAll && c.Bits.Count == bits.Count && c.PressBit == bits[^1] && c.Bits.All(bits.Contains)) is { } existing) return existing;
         ComboSlot combo = new() { Bits = bits };
         ActiveProfile.ComboSlots.Add(combo);
         Save();
@@ -709,6 +717,7 @@ internal sealed class MouseService : IDisposable
 
     public void SetComboButtons(ComboSlot combo, List<int> bits, bool? holdAll = null)
     {
+        combo = ActiveProfile.EditCombo(combo);
         combo.Bits = bits;
         if (holdAll is bool all) combo.HoldAll = all;
         Save();
@@ -716,14 +725,33 @@ internal sealed class MouseService : IDisposable
 
     public void SetComboAction(ComboSlot combo, string? id)
     {
-        combo.Action = id ?? "";
+        ActiveProfile.EditCombo(combo).Action = id ?? "";
         Save();
     }
 
     public void DeleteCombo(ComboSlot combo)
     {
-        ActiveProfile.ComboSlots.Remove(combo);
+        ActiveProfile.RemoveCombo(combo);
         Save();
+    }
+
+    public bool MoveCombo(ComboSlot combo, ComboSlot target, bool after)
+    {
+        if (IsOnboard || combo == target) return false;
+        List<ComboSlot> order = [.. ActiveProfile.CombosInDisplayOrder];
+        int from = order.IndexOf(combo);
+        int targetIndex = order.IndexOf(target);
+        if (from < 0 || targetIndex < 0) return false;
+
+        int to = targetIndex + (after ? 1 : 0) - (from < targetIndex ? 1 : 0);
+        if (from == to) return false;
+        order.RemoveAt(from);
+        order.Insert(to, combo);
+        // The original list order still breaks ties between equally specific combos.
+        if (ActiveProfile.Parent is not null) ActiveProfile.ComboOrder = [.. order.Select(item => item.Id)];
+        else for (int i = 0; i < order.Count; i++) order[i].DisplayOrder = i;
+        Save();
+        return true;
     }
 
     /// <summary>"G4 + G5" for a combo's buttons.</summary>
@@ -777,7 +805,7 @@ internal sealed class MouseService : IDisposable
     {
         MouseProfile profile = ActiveProfile;
         if (!down && !pulse) ReleaseHoldCombos(bit);
-        if (profile.Assignments.GetValueOrDefault(bit) == BuiltinActions.GShift)
+        if (profile.Binding(false, bit) == BuiltinActions.GShift)
         {
             if (GShiftHeld == down) return;
             GShiftHeld = down;
@@ -954,8 +982,11 @@ internal sealed class MouseService : IDisposable
             BuiltinActions.DpiUp => Math.Min(stages.Count - 1, current + 1),
             _ => (current + 1) % stages.Count
         };
-        profile.Dpi = stages[next];
-        Save(undoable: false); // Pressed on the mouse, not an edit.
+        if (profile.Dpi != stages[next])
+        {
+            profile.Dpi = stages[next];
+            Save(undoable: false); // Pressed on the mouse, not an edit.
+        }
         SendDpi(profile.Dpi);
         Write($"DPI {profile.Dpi}");
         SettingsChanged?.Invoke();
@@ -1032,9 +1063,9 @@ internal sealed class MouseService : IDisposable
         {
             if (OnboardProfiles.IndexFor(control.Id) is not int index) continue;
             int? bit = Settings.BitFor(control);
-            string normal = bit is int b && profile.Assignments.GetValueOrDefault(b) is { Length: > 0 } assigned ? assigned : OnboardProfiles.NativeAction(control);
+            string normal = bit is int b && profile.Binding(false, b) is { Length: > 0 } assigned ? assigned : OnboardProfiles.NativeAction(control);
             string shift = normal == BuiltinActions.GShift ? normal
-                : bit is int s && profile.ShiftAssignments.GetValueOrDefault(s) is { Length: > 0 } shiftAssigned ? shiftAssigned : normal;
+                : bit is int s && profile.Binding(true, s) is { Length: > 0 } shiftAssigned ? shiftAssigned : normal;
             if (!AddOnboard(normal, index, buttons, macros))
                 notes.Add($"{control.Label}: {Settings.DescribeAssignment(normal)} can't be stored on the mouse; left as it was");
             if (!AddOnboard(shift, index, shifted, shiftMacros) && shift != normal)
@@ -1283,6 +1314,58 @@ internal sealed class MouseService : IDisposable
     }
 
     // ── Profiles ──────────────────────────────────────────────────────────────
+
+    public static bool CanLinkProfile(MouseProfile child, MouseProfile parent)
+    {
+        for (MouseProfile? ancestor = parent; ancestor is not null; ancestor = ancestor.Parent)
+            if (ancestor == child) return false;
+        return true;
+    }
+
+    public void LinkProfile(MouseProfile child, MouseProfile parent)
+    {
+        if (!CanLinkProfile(child, parent) || child.Parent == parent) return;
+        if (child.Parent is null) child.ClearOverrides();
+        child.SetParent(parent);
+        SaveProfileSettings(child);
+    }
+
+    public void UnlinkProfile(MouseProfile child)
+    {
+        child.CopySettingsFrom(child);
+        SaveProfileSettings(child);
+    }
+
+    public void SaveProfileSettings(MouseProfile changed)
+    {
+        Save();
+        if (IsOnboard) return;
+        for (MouseProfile? profile = ActiveProfile; profile is not null; profile = profile.Parent)
+        {
+            if (profile != changed) continue;
+            ReleaseAll();
+            engine.ResetSequences();
+            ApplyDeviceSettings();
+            StateChanged?.Invoke();
+            break;
+        }
+    }
+
+    public void RemoveProfile(MouseProfile profile)
+    {
+        // Keep each direct child's current settings, including the inherited values.
+        foreach (MouseProfile child in Settings.Profiles.Where(p => p.Parent == profile))
+            child.CopySettingsFrom(child);
+        bool wasActive = profile == Settings.ActiveProfile;
+        Settings.Profiles.Remove(profile);
+        if (wasActive)
+        {
+            MouseProfile fallback = Settings.Profiles.FirstOrDefault(p => p.IsDesktop) ?? Settings.Profiles[0];
+            if (IsOnboard) Settings.ActiveProfileId = fallback.Id;
+            else SelectProfile(fallback);
+        }
+        Save();
+    }
 
     public void SelectProfile(MouseProfile profile)
     {
