@@ -1060,7 +1060,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
             };
             box.ContextMenu = ChipMenu(combo, bit, isPress);
             ToolTipService.SetInitialShowDelay(box, 600);
-            box.ToolTip = "Click to select it, then use the record button to replace it. Right-click to change between hold and press.";
+            box.ToolTip = "Click to select it, then use the record button to replace it. Right-click for hold, press, and delete options.";
             row.Children.Add(box);
         }
         if (combo.HoldAll)
@@ -1076,6 +1076,7 @@ internal sealed class AssignmentsPage : UserControl, IPage
     /// <summary>
     /// Right-click menu on a combo's button. Press makes it the one pressed while the others are held; Hold on the
     /// pressed button makes every button held, so the combo runs once they've all been down for a moment.
+    /// Deleting the pressed button makes the last remaining button the press trigger.
     /// </summary>
     private ContextMenu ChipMenu(ComboSlot combo, int bit, bool isPress)
     {
@@ -1109,7 +1110,14 @@ internal sealed class AssignmentsPage : UserControl, IPage
             if (isPress) { press.IsChecked = true; return; }
             Apply([.. combo.Bits.Where(b => b != bit), bit], holdAll: false);
         };
-        return new ContextMenu { Items = { hold, press } };
+        MenuItem delete = new() { Header = "Delete button", IsEnabled = combo.Bits.Count > 2 };
+        if (!delete.IsEnabled)
+        {
+            delete.ToolTip = "A combo needs at least two buttons.";
+            ToolTipService.SetShowOnDisabled(delete, true);
+        }
+        delete.Click += (_, _) => Apply([.. combo.Bits.Where(b => b != bit)], combo.HoldAll);
+        return new ContextMenu { Items = { hold, press, new Separator(), delete } };
     }
 
     /// <summary>

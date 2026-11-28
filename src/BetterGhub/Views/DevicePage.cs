@@ -13,7 +13,7 @@ internal sealed class DevicePage : UserControl, IPage
     private readonly StackPanel connection = new();
     private readonly StackPanel battery = new();
     private readonly Border batteryCard;
-    private TextBlock? mouseFirmware, receiverFirmware;
+    private TextBlock? connectionType, mouseFirmware, receiverFirmware;
     private readonly StackPanel appCard = new();
     private readonly WrapPanel lamps = new();
     private readonly ListBox log = new();
@@ -185,9 +185,11 @@ internal sealed class DevicePage : UserControl, IPage
 
     private void RenderFirmware()
     {
-        if (mouseFirmware is null || receiverFirmware is null) return;
+        if (connectionType is null || mouseFirmware is null || receiverFirmware is null) return;
+        bool connected = service.State == ConnectionState.Connected;
+        connectionType.Text = connected ? (service.Wired ? "USB cable" : "LIGHTSPEED") : "Disconnected";
         mouseFirmware.Text = service.MouseFirmware ?? "Connect to read";
-        receiverFirmware.Text = service.ReceiverFirmware ?? "Connect to read";
+        receiverFirmware.Text = connected && service.Wired ? "—" : service.ReceiverFirmware ?? "Connect to read";
     }
 
     private void SwitchToOnboard(Core.OnboardSlot slot)
@@ -221,7 +223,7 @@ internal sealed class DevicePage : UserControl, IPage
             connection.Children.Add(new Border
             {
                 Background = Ui.Brush("WarningDim"), CornerRadius = new CornerRadius(9), Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 14),
-                Child = Ui.Text("G HUB and BetterGhub can't control the receiver at the same time. Right-click the G HUB tray icon and choose Quit, then BetterGhub connects by itself.", "Body", size: 12, color: "Warning")
+                Child = Ui.Text("G HUB and BetterGhub can't control the mouse at the same time. Right-click the G HUB tray icon and choose Quit, then BetterGhub connects by itself.", "Body", size: 12, color: "Warning")
             });
         Button action = service.State is ConnectionState.Connected or ConnectionState.Connecting
             ? Ui.Button("Disconnect", service.Disconnect, "Btn")
@@ -322,7 +324,7 @@ internal sealed class DevicePage : UserControl, IPage
         }
         Line("Mouse", Device.HidppBridge.MouseName);
         mouseFirmware = Line("Mouse firmware", "");
-        Line("Receiver", "LIGHTSPEED, slot 1");
+        connectionType = Line("Connection", "");
         receiverFirmware = Line("Receiver firmware", "");
         Line("Protocol", "HID++ 2.0 · 0x8100 host mode, 0x8110 button spy, 0x2201 DPI, 0x8060 report rate, 0x1004 battery");
         Line("Settings", Settings.FilePath);

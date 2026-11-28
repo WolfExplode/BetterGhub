@@ -42,6 +42,7 @@ internal sealed class MouseService : IDisposable
     public bool CanUndo => history.CanUndo;
     public bool CanRedo => history.CanRedo;
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
+    public bool Wired { get; private set; }
     public string StateDetail { get; private set; } = "";
     public int DeviceDpi { get; private set; }
     public int DeviceIntervalMs { get; private set; }
@@ -235,7 +236,7 @@ internal sealed class MouseService : IDisposable
             bridge.OnboardSector = Settings.OnboardSector ?? 0;
             bridge.Start();
             State = ConnectionState.Connecting;
-            StateDetail = "Looking for the LIGHTSPEED receiver…";
+            StateDetail = "Looking for the mouse over USB or LIGHTSPEED…";
         }
         catch (Exception error)
         {
@@ -314,7 +315,7 @@ internal sealed class MouseService : IDisposable
 
     private void HandleEventCore(DeviceEvent item)
     {
-        // The receiver can differ from the one found at startup (plugged in later, or swapped): follow its layout.
+        // The connected mouse can differ from the one found at startup: follow its layout.
         bool g304 = Device.HidppBridge.MouseName.StartsWith("G304", StringComparison.Ordinal);
         if (item is ModeEvent && g304 != MouseControls.G304)
         {
@@ -326,10 +327,11 @@ internal sealed class MouseService : IDisposable
         {
             case ConnectedEvent connected:
                 State = ConnectionState.Connected;
+                Wired = connected.Wired;
                 DeviceDpi = connected.Dpi;
                 DeviceIntervalMs = connected.ReportIntervalMs;
                 StateDetail = "";
-                Write($"Connected · {DeviceDpi} DPI · {DeviceReportRate} Hz");
+                Write($"Connected over {(Wired ? "USB" : "LIGHTSPEED")} · {DeviceDpi} DPI · {DeviceReportRate} Hz");
                 ApplyDeviceSettings();
                 StateChanged?.Invoke();
                 break;

@@ -1,6 +1,6 @@
 # BetterGhub
 
-A lightweight Windows replacement for G HUB for the **G502 X LIGHTSPEED** on its `046d:c547` LIGHTSPEED receiver: macros, button assignments, DPI and per-app profiles. It does not write onboard memory or control lighting.
+A lightweight Windows replacement for G HUB for the **G502 X LIGHTSPEED** over its `046d:c547` LIGHTSPEED receiver or a USB data cable (`046d:c098`): macros, button assignments, DPI and per-app profiles. It does not write onboard memory or control lighting.
 
 ## For users
 
@@ -55,7 +55,7 @@ Command-line switches:
 | Switch | What it does |
 |---|---|
 | `--minimized` | Start in the tray. Used by autostart. |
-| `--probe <file>` | Read-only receiver diagnostic. Lists HID interfaces and reads mode, DPI and rate. |
+| `--probe <file>` | Read-only mouse diagnostic. Lists HID interfaces and reads mode, DPI and rate. |
 | `--snapshot <folder> [--small]` | Render every page to PNG for design review. Set `BETTERGHUB_SETTINGS` to a scratch settings file first. |
 
 ## Current limits

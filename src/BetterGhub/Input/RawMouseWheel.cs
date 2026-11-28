@@ -1,10 +1,11 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
+using BetterGhub.Device;
 
 namespace BetterGhub.Input;
 
-/// <summary>Reads wheel pulses from the G502 receiver via Raw Input (works while the app is in the background).</summary>
+/// <summary>Reads wheel pulses from supported mice via Raw Input, including in the background.</summary>
 internal sealed class RawMouseWheel
 {
     public const int Up = 0x10000;
@@ -32,7 +33,7 @@ internal sealed class RawMouseWheel
             RawInputHeader header = Marshal.PtrToStructure<RawInputHeader>(buffer);
             if (header.Type != 0) return 0;
             string name = DeviceName(header.Device);
-            if (!new[] { "VID_046D&PID_C547", "VID_046D&PID_C53F", "VID_046D&PID_C539" }.Any(id => name.Contains(id, StringComparison.OrdinalIgnoreCase))) return 0;
+            if (!HidppBridge.IsSupportedMousePath(name)) return 0;
             nint data = buffer + (int)headerSize;
             ushort flags = unchecked((ushort)Marshal.ReadInt16(data, 4));
             short amount = Marshal.ReadInt16(data, 6);

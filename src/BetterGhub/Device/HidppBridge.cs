@@ -7,7 +7,7 @@ using BetterGhub.Core;
 namespace BetterGhub.Device;
 
 /// <summary>
-/// Native HID++ 2.0 bridge for the G502 X LIGHTSPEED on a 046d:c547 receiver (device slot 1).
+/// Native HID++ 2.0 bridge for supported Logitech mice over a LIGHTSPEED receiver or direct USB.
 /// Enables volatile host mode (0x8100) and button spying (0x8110), streams button bits, and applies
 /// DPI (0x2201) and report rate (0x8060), and reads the battery (0x1004 or 0x1000) and on-board profiles.
 /// Flash is written only by <see cref="WriteOnboard"/>, which the user confirms, and only to user profile sectors. Mirrors bridge/hidpp_bridge.py.
@@ -15,38 +15,39 @@ namespace BetterGhub.Device;
 internal sealed class HidppBridge : IDisposable
 {
     private const ushort VendorId = 0x046D;
-    private const byte Slot = 1, ReceiverIndex = 0xFF, SoftwareId = 0x0D;
+    private const byte ReceiverSlot = 1, DirectIndex = 0xFF, SoftwareId = 0x0D;
 
-    /// <summary>Known LIGHTSPEED receivers: 0xC547 (G502 X), 0xC53F and 0xC539 (G304 / G305).</summary>
-    private static readonly (ushort ProductId, string Mouse)[] Receivers = [(0xC547, "G502 X LIGHTSPEED"), (0xC53F, "G304 LIGHTSPEED"), (0xC539, "G304 LIGHTSPEED")];
-
-    /// <summary>The mouse behind the receiver found by the last <see cref="Session.Open"/>, for display.</summary>
-    public static string MouseName { get; private set; } = Receivers[0].Mouse;
-
-    /// <summary>Picks the mouse layout from the receiver plugged in at startup; the G502 X when none is found.</summary>
-    public static void Detect(bool forceG304 = false)
+    private sealed record MouseEndpoint(ushort ProductId, string Name, bool Wired = false)
     {
-        (ushort productId, string mouse) = FindReceiver();
-        if (forceG304) (productId, mouse) = Receivers[1];
-        if (productId != 0) MouseName = mouse;
-        MouseControls.G304 = productId is 0xC53F or 0xC539;
+        public string HardwareId { get; } = $"vid_{VendorId:x4}&pid_{ProductId:x4}";
     }
 
-    private static (ushort ProductId, string Mouse) FindReceiver()
+    // Try direct USB first when the mouse and its receiver are both plugged in.
+    private static readonly MouseEndpoint[] Endpoints =
+    [
+        new(0xC098, "G502 X LIGHTSPEED", Wired: true),
+        new(0xC547, "G502 X LIGHTSPEED"),
+        new(0xC53F, "G304 LIGHTSPEED"),
+        new(0xC539, "G304 LIGHTSPEED")
+    ];
+
+    public static bool IsSupportedMousePath(string path) =>
+        Endpoints.Any(endpoint => path.Contains(endpoint.HardwareId, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The last detected mouse model, for display.</summary>
+    public static string MouseName { get; private set; } = Endpoints[0].Name;
+
+    /// <summary>Picks the mouse layout at startup; defaults to the G502 X when none is found.</summary>
+    public static void Detect(bool forceG304 = false)
     {
-        var present = Receivers.Where(r => HidDevice.Enumerate(VendorId, r.ProductId).Any(x => x.UsagePage == 0xFF00)).ToArray();
-        foreach (var receiver in present)
+        MouseEndpoint? detected = null;
+        if (!forceG304)
         {
-            try
-            {
-                using Session session = Session.OpenReceiver(receiver.ProductId);
-                if (session.Call(0, 0, 0x81, 0x00, 0)[0] != 0) return receiver;
-            }
-            catch (IOException) { /* Try the next receiver if its mouse is unavailable. */ }
-            catch (TimeoutException) { }
-            catch (Win32Exception) { }
+            try { using Session session = Session.Open(out detected); }
+            catch (Exception error) when (error is IOException or TimeoutException or Win32Exception) { }
         }
-        return present.FirstOrDefault();
+        MouseName = forceG304 ? "G304 LIGHTSPEED" : (detected ?? Endpoints[0]).Name;
+        MouseControls.G304 = forceG304 || detected?.ProductId is 0xC53F or 0xC539;
     }
 
     private readonly ConcurrentQueue<(string Command, int Value, object? Data)> commands = new();
@@ -116,7 +117,8 @@ internal sealed class HidppBridge : IDisposable
         {
             try
             {
-                using Session session = Session.Open();
+                using Session session = Session.Open(out _);
+                MouseName = session.Endpoint.Name;
                 current = session;
                 if (token.IsCancellationRequested) break;
                 Serve(session, token);
@@ -134,9 +136,9 @@ internal sealed class HidppBridge : IDisposable
 
     private static string Friendly(Exception error) => error switch
     {
-        ReceiverMissingException => "Receiver not found. Is it plugged in?",
+        DeviceMissingException => "Plug in the mouse by USB or connect its LIGHTSPEED receiver",
         TimeoutException => "Mouse is asleep or switched off",
-        Win32Exception { NativeErrorCode: 5 } => "The receiver is in use by another program (is G HUB running?)",
+        Win32Exception { NativeErrorCode: 5 } => "The mouse connection is in use by another program (is G HUB running?)",
         _ => error.Message
     };
 
@@ -160,8 +162,8 @@ internal sealed class HidppBridge : IDisposable
         // Mode and slots first, so the service knows what the pages should edit before it reports connected.
         Emit(new ModeEvent(onboardSector));
         if (ReadOnboard(session, modeIndex) is { } onboard) Emit(new OnboardMemoryEvent(onboard));
-        Emit(new ConnectedEvent(dpi, interval));
-        Emit(new FirmwareEvent(MouseFirmware(session), ReceiverFirmware(session)));
+        Emit(new ConnectedEvent(dpi, interval, session.Wired));
+        Emit(new FirmwareEvent(MouseFirmware(session), session.Wired ? null : ReceiverFirmware(session)));
         Battery battery = Battery.Find(session);
         if (battery.Read(session) is { } charge) Emit(charge);
         Stopwatch sinceBattery = Stopwatch.StartNew();
@@ -238,7 +240,7 @@ internal sealed class HidppBridge : IDisposable
 
             byte[]? report = session.Next(100);
             if (report is { Length: > 0 }) sinceReport.Restart();
-            if (report is { Length: >= 6 } && report[0] == 0x11 && report[1] == Slot && report[2] == spyIndex && report[3] == 0)
+            if (report is { Length: >= 6 } && report[0] == 0x11 && report[1] == session.DeviceIndex && report[2] == spyIndex && report[3] == 0)
             {
                 int mask = (report[4] << 8) | report[5];
                 int changed = mask ^ previous;
@@ -249,7 +251,7 @@ internal sealed class HidppBridge : IDisposable
                 }
                 previous = mask;
             }
-            else if (battery.Parse(report) is { } changed) Emit(changed);
+            else if (battery.Parse(report, session.DeviceIndex) is { } changed) Emit(changed);
             if (sinceBattery.Elapsed > TimeSpan.FromSeconds(60))
             {
                 if (battery.Read(session) is { } polled) Emit(polled);
@@ -283,8 +285,8 @@ internal sealed class HidppBridge : IDisposable
         }
 
         /// <summary>The mouse broadcasts a battery event (function 0, software id 0) when the charge or power source changes.</summary>
-        public BatteryEvent? Parse(byte[]? report) =>
-            Index != 0 && report is { Length: >= 7 } && report[0] is 0x10 or 0x11 && report[1] == Slot && report[2] == Index && report[3] == 0
+        public BatteryEvent? Parse(byte[]? report, byte deviceIndex) =>
+            Index != 0 && report is { Length: >= 7 } && report[0] is 0x10 or 0x11 && report[1] == deviceIndex && report[2] == Index && report[3] == 0
                 ? Decode(report[4..]) : null;
 
         private BatteryEvent Decode(byte[] payload)
@@ -530,17 +532,17 @@ internal sealed class HidppBridge : IDisposable
     {
         StringBuilder text = new();
         text.AppendLine($"BetterGhub probe {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        foreach ((ushort productId, string mouse) in Receivers)
+        foreach (MouseEndpoint endpoint in Endpoints)
         {
-            List<HidDevice.Info> interfaces = HidDevice.Enumerate(VendorId, productId);
-            text.AppendLine($"{interfaces.Count} HID interface(s) for {VendorId:x4}:{productId:x4} ({mouse})");
+            List<HidDevice.Info> interfaces = HidDevice.Enumerate(VendorId, endpoint.ProductId);
+            text.AppendLine($"{interfaces.Count} HID interface(s) for {VendorId:x4}:{endpoint.ProductId:x4} ({endpoint.Name}, {(endpoint.Wired ? "USB cable" : "LIGHTSPEED receiver")})");
             foreach (HidDevice.Info item in interfaces)
                 text.AppendLine($"  usage page 0x{item.UsagePage:x4} usage 0x{item.Usage:x2}  {item.Path}");
         }
         try
         {
-            using Session session = Session.Open();
-            text.AppendLine($"Opened short ({session.ShortLengths}) and long ({session.LongLengths}) HID++ collections");
+            using Session session = Session.Open(out _);
+            text.AppendLine($"Opened {VendorId:x4}:{session.Endpoint.ProductId:x4} at index 0x{session.DeviceIndex:x2}: short ({session.ShortLengths}) and long ({session.LongLengths}) HID++ collections");
             foreach ((string name, byte high, byte low) in new[] { ("OnboardProfiles 0x8100", (byte)0x81, (byte)0x00), ("MouseButtonSpy 0x8110", (byte)0x81, (byte)0x10), ("AdjustableDpi 0x2201", (byte)0x22, (byte)0x01), ("ReportRate 0x8060", (byte)0x80, (byte)0x60) })
                 text.AppendLine($"  {name}: feature index {session.Call(0, 0, high, low, 0)[0]}");
             byte mode = session.Call(0, 0, 0x81, 0x00, 0)[0];
@@ -550,7 +552,7 @@ internal sealed class HidppBridge : IDisposable
             byte rate = session.Call(0, 0, 0x80, 0x60, 0)[0];
             if (rate != 0) text.AppendLine($"  Report interval: {session.Call(rate, 1, 0, 0, 0)[0]} ms");
             text.AppendLine($"  Mouse firmware: {MouseFirmware(session) ?? "unknown"}");
-            text.AppendLine($"  Receiver firmware: {ReceiverFirmware(session) ?? "unknown"}");
+            if (!session.Wired) text.AppendLine($"  Receiver firmware: {ReceiverFirmware(session) ?? "unknown"}");
             if (mode != 0 && ReadOnboard(session, mode) is { } onboard)
                 foreach (OnboardSlot slot in onboard.Slots)
                 {
@@ -576,7 +578,7 @@ internal sealed class HidppBridge : IDisposable
         return text.ToString();
     }
 
-    private sealed class ReceiverMissingException(string message) : IOException(message);
+    private sealed class DeviceMissingException(string message) : IOException(message);
     /// <summary>The mouse answered with a HID++ error: the request was refused, the link is fine.</summary>
     private sealed class HidppErrorException(string message) : IOException(message);
 
@@ -591,34 +593,60 @@ internal sealed class HidppBridge : IDisposable
         private volatile bool disposed;
         private int disposing;
 
+        public MouseEndpoint Endpoint { get; }
+        public bool Wired => Endpoint.Wired;
+        public byte DeviceIndex => Wired ? DirectIndex : ReceiverSlot;
         public string ShortLengths => $"in {shortDevice.InputLength} / out {shortDevice.OutputLength}";
         public string LongLengths => $"in {longDevice.InputLength} / out {longDevice.OutputLength}";
 
-        private Session(HidDevice shortDevice, HidDevice longDevice)
+        private Session(MouseEndpoint endpoint, HidDevice shortDevice, HidDevice longDevice)
         {
+            Endpoint = endpoint;
             this.shortDevice = shortDevice;
             this.longDevice = longDevice;
             readers = [Reader(shortDevice), Reader(longDevice)];
         }
 
-        public static Session Open()
+        public static Session Open(out MouseEndpoint? detected)
         {
-            (ushort productId, string mouse) = FindReceiver();
-            if (productId == 0) throw new ReceiverMissingException("No supported receiver found");
-            MouseName = mouse;
-            return OpenReceiver(productId);
+            detected = null;
+            Exception? firstError = null;
+            foreach (MouseEndpoint endpoint in Endpoints)
+            {
+                List<HidDevice.Info> vendor = HidDevice.Enumerate(VendorId, endpoint.ProductId).Where(x => x.UsagePage == 0xFF00).ToList();
+                if (vendor.Count == 0) continue;
+                detected ??= endpoint;
+                try
+                {
+                    Session session = OpenEndpoint(endpoint, vendor);
+                    detected = endpoint;
+                    return session;
+                }
+                catch (Exception error) when (error is IOException or TimeoutException or Win32Exception)
+                {
+                    firstError ??= error;
+                }
+            }
+            throw firstError ?? new DeviceMissingException("No supported mouse or receiver found");
         }
 
-        public static Session OpenReceiver(ushort productId)
+        private static Session OpenEndpoint(MouseEndpoint endpoint, List<HidDevice.Info> vendor)
         {
-            List<HidDevice.Info> vendor = HidDevice.Enumerate(VendorId, productId).Where(x => x.UsagePage == 0xFF00).ToList();
             HidDevice.Info[] shortMatches = vendor.Where(x => x.Usage == 1).ToArray();
             HidDevice.Info[] longMatches = vendor.Where(x => x.Usage == 2).ToArray();
             if (shortMatches.Length != 1 || longMatches.Length != 1)
-                throw new ReceiverMissingException($"Expected one of each HID++ collection; found {shortMatches.Length} short and {longMatches.Length} long");
+                throw new IOException($"Expected one of each HID++ collection; found {shortMatches.Length} short and {longMatches.Length} long");
             HidDevice shortDevice = HidDevice.Open(shortMatches[0].Path);
-            try { return new Session(shortDevice, HidDevice.Open(longMatches[0].Path)); }
+            Session session;
+            try { session = new Session(endpoint, shortDevice, HidDevice.Open(longMatches[0].Path)); }
             catch { shortDevice.Dispose(); throw; }
+            try
+            {
+                if (session.Call(0, 0, 0x81, 0x00, 0)[0] == 0)
+                    throw new IOException($"{endpoint.Name} didn't report the on-board profiles feature (0x8100)");
+                return session;
+            }
+            catch { session.Dispose(); throw; }
         }
 
         private Thread Reader(HidDevice device)
@@ -639,7 +667,7 @@ internal sealed class HidppBridge : IDisposable
 
         private byte[]? Take(int timeoutMs)
         {
-            if (failure is { } error) throw new IOException("The receiver stopped responding", error);
+            if (failure is { } error) throw new IOException("The mouse connection stopped responding", error);
             return reports.TryTake(out byte[]? report, timeoutMs) ? report : null;
         }
 
@@ -649,24 +677,25 @@ internal sealed class HidppBridge : IDisposable
         /// <summary>Next unsolicited report (e.g. button spy), or null after the timeout.</summary>
         public byte[]? Next(int timeoutMs) => pending.Count > 0 ? pending.Dequeue() : Take(timeoutMs);
 
-        /// <summary>Short HID++ request; returns the reply parameters (bytes after the 4-byte header).</summary>
+        /// <summary>HID++ request with up to three parameter bytes. Direct USB uses long reports.</summary>
         public byte[] Call(byte feature, byte function, byte a, byte b, byte c) =>
-            Request(Slot, feature, (byte)((function << 4) | SoftwareId), a, b, c);
+            Wired ? CallLong(feature, function, a, b, c)
+                : Request(DeviceIndex, feature, (byte)((function << 4) | SoftwareId), a, b, c);
 
         /// <summary>Long HID++ request, for calls that need more than three parameter bytes.</summary>
         public byte[] CallLong(byte feature, byte function, params byte[] parameters)
         {
             byte[] request = new byte[20];
             request[0] = 0x11;
-            request[1] = Slot;
+            request[1] = DeviceIndex;
             request[2] = feature;
             request[3] = (byte)((function << 4) | SoftwareId);
             parameters.CopyTo(request, 4);
-            return Send(longDevice, request, Slot, feature, request[3]);
+            return Send(longDevice, request, DeviceIndex, feature, request[3]);
         }
 
         /// <summary>Reads a HID++ 1.0 register (sub-id 0x81) of the receiver itself (device index 0xFF).</summary>
-        public byte[] ReadReceiverRegister(byte address, byte a) => Request(ReceiverIndex, 0x81, address, a, 0, 0);
+        public byte[] ReadReceiverRegister(byte address, byte a) => Request(DirectIndex, 0x81, address, a, 0, 0);
 
         private byte[] Request(byte device, byte feature, byte functionSoftware, byte a, byte b, byte c) =>
             Send(shortDevice, [0x10, device, feature, functionSoftware, a, b, c], device, feature, functionSoftware);

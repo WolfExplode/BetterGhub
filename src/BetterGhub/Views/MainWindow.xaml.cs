@@ -160,7 +160,7 @@ public partial class MainWindow : Window
         {
             ConnectionState.Connected when service.IsOnboard => ("Connected", (Brush)FindResource("Success"), $"On-board · {service.ActiveOnboardSlot?.DisplayName ?? "slot"}", "Disconnect"),
             ConnectionState.Connected => ("Connected", (Brush)FindResource("Success"), $"{service.DeviceDpi} DPI · {service.DeviceReportRate} Hz", "Disconnect"),
-            ConnectionState.Connecting => ("Connecting", (Brush)FindResource("Warning"), Fallback(service.StateDetail, "Looking for the receiver…"), "Cancel"),
+            ConnectionState.Connecting => ("Connecting", (Brush)FindResource("Warning"), Fallback(service.StateDetail, "Looking for the mouse…"), "Cancel"),
             ConnectionState.GHubRunning => ("G HUB is running", (Brush)FindResource("Warning"), "Exit G HUB completely. BetterGhub connects when it closes.", "Try again"),
             _ => ("Disconnected", (Brush)FindResource("Faint"), Fallback(service.StateDetail, "Mouse not connected"), "Connect mouse")
         };

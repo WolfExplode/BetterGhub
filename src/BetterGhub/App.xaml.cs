@@ -24,7 +24,7 @@ public partial class App : Application
         base.OnStartup(e);
         string[] args = e.Args;
 
-        // --probe <file>: read-only receiver diagnostic (lists HID interfaces, reads mode/DPI/rate), then exit.
+        // --probe <file>: read-only mouse diagnostic (lists HID interfaces, reads mode/DPI/rate), then exit.
         int probe = Array.IndexOf(args, "--probe");
         if (probe >= 0 && probe + 1 < args.Length)
         {
